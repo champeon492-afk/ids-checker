@@ -1,5 +1,9 @@
 import unittest
 
+import ifcopenshell.api.project
+import ifcopenshell.api.pset
+import ifcopenshell.api.root
+
 from validator import csv_bytes, issue_rows, parse_ids_preview
 
 
@@ -40,6 +44,26 @@ class ValidatorTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertIn("No matching", rows[0]["Reason"])
         self.assertIn(b"Specification", csv_bytes(rows))
+
+    def test_property_failures_identify_missing_set_property_and_value(self):
+        model = ifcopenshell.api.project.create_file()
+        wall = ifcopenshell.api.root.create_entity(model, ifc_class="IfcWall", name="Wall")
+        requirement = {
+            "facet_type": "Property",
+            "label": "Pset_WallCommon.FireRating",
+            "metadata": {"propertySet": {"simpleValue": "Pset_WallCommon"}, "baseName": {"simpleValue": "FireRating"}},
+            "failed_entities": [{"global_id": wall.GlobalId, "class": "IfcWall", "name": "Wall", "reason": "The required property set does not exist"}],
+        }
+        report = {"specifications": [{"name": "Wall checks", "requirements": [requirement]}]}
+        self.assertIn("Missing property set Pset_WallCommon", issue_rows(report, model=model)[0]["Reason"])
+
+        pset = ifcopenshell.api.pset.add_pset(model, product=wall, name="Pset_WallCommon")
+        requirement["failed_entities"][0]["reason"] = "The property set does not contain the required property"
+        self.assertIn("Missing required property FireRating", issue_rows(report, model=model)[0]["Reason"])
+
+        property_entity = model.createIfcPropertySingleValue(Name="FireRating", NominalValue=None)
+        pset.HasProperties = [property_entity]
+        self.assertIn("exists but has no value", issue_rows(report, model=model)[0]["Reason"])
 
 
 if __name__ == "__main__":

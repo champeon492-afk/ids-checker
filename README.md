@@ -19,8 +19,8 @@ The app opens in your browser. Upload one or more `.ids` files and one `.ifc` fi
 ## Results
 
 - Summary: passing and failing checks across every uploaded IDS file.
-- Issues: one row per failed requirement and IFC element, including the source IDS file, `GlobalId`, and the reason reported by IfcTester.
-- Building workspace: a searchable list of failed elements on the left and the complete That Open IFC viewer on the right. Selecting a failure highlights it and zooms to it while the rest of the building remains visible.
+- Issues: one row per failed requirement and IFC element, including the source IDS file, `GlobalId`, and an actionable explanation of missing property sets, missing properties, empty values, wrong values or data types where the IDS identifies them.
+- Building workspace: a searchable list of failed elements and an IFC class issue chart on the left, with the complete That Open IFC viewer on the right. Select a class to filter the list and highlight its failed elements while other geometry becomes transparent. Select an element to zoom to it, then use **Isolate selected** to make the other geometry transparent. Turn isolation off or use **Clear selection** to restore the whole building.
 - Inspector: view IFC attributes, inherited property sets and quantities for the selected element, or browse the model hierarchy and inspect any element.
 - Downloads: JSON with full validation details, CSV of failures, and an HTML report for one IDS file or a ZIP of HTML reports for several IDS files.
 

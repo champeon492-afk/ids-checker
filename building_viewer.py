@@ -213,13 +213,14 @@ def _viewer_html(token: str) -> str:
   </header>
   <div class="workspace-main">
     <aside class="failures ot-dark-card" aria-label="Failed elements">
-      <div class="panel-head"><span class="ot-eyebrow">Validation results</span><h2>Failed elements <span id="failure-count" class="count-pill">0</span></h2><p>Select an element to locate it in the model.</p></div>
+      <div class="panel-head"><span class="ot-eyebrow">Validation results</span><h2>Failed elements <span id="failure-count" class="count-pill">0</span></h2><p>Select an IFC class to filter the failures, or choose an element to inspect it.</p></div>
+      <section class="chart-panel" aria-label="Errors by IFC class"><div class="chart-heading"><strong>Errors by IFC class</strong><span>Validation issues</span></div><div id="class-chart" class="class-chart"></div></section>
       <label class="search-field"><svg class="ot-icon"><use href="/icons.svg?token={token}#search"/></svg><input id="failure-search" type="search" placeholder="Search failures" aria-label="Search failed elements"></label>
       <div id="failure-list" class="failure-list" role="list"></div>
       <button id="more-failures" class="more-button" type="button" hidden>Show more</button>
     </aside>
     <section class="viewer ot-dark-card" aria-label="IFC 3D viewer">
-      <div class="viewer-head"><div><span class="ot-eyebrow">Model view</span><h2>Building overview</h2></div><div class="viewer-actions"><button id="reset-view" class="view-button" type="button" disabled>Fit building</button><button id="show-properties" class="view-button" type="button">Properties</button><button id="show-browser" class="view-button" type="button">Model browser</button></div></div>
+      <div class="viewer-head"><div><span class="ot-eyebrow">Model view</span><h2 id="view-title">Building overview</h2></div><div class="viewer-actions"><button id="isolate-selected" class="view-button" type="button" aria-pressed="false" disabled>Isolate selected</button><button id="clear-selection" class="view-button" type="button" disabled>Clear selection</button><button id="reset-view" class="view-button" type="button" disabled>Fit building</button><button id="show-properties" class="view-button" type="button">Properties</button><button id="show-browser" class="view-button" type="button">Model browser</button></div></div>
       <div class="viewport"><div id="canvas" aria-label="Interactive 3D model"></div><div class="viewport-hint">Drag to orbit · Scroll to zoom</div>
         <aside id="inspector" class="inspector ot-glass-card" aria-label="Element inspector" hidden>
           <div class="inspector-head"><div class="inspector-tabs"><button id="properties-tab" type="button" aria-pressed="true">Properties</button><button id="browser-tab" type="button" aria-pressed="false">Model browser</button></div><button id="close-inspector" class="close-inspector" type="button" aria-label="Close inspector">×</button></div>

@@ -9,7 +9,7 @@ import zipfile
 import streamlit as st
 
 from building_viewer import show_building
-from validator import csv_bytes, issue_rows, json_bytes, parse_ids_preview, run_validations
+from validator import csv_bytes, json_bytes, parse_ids_preview, run_validations
 
 
 st.set_page_config(page_title="IDS Model Validator", page_icon="✅", layout="wide")
@@ -71,7 +71,7 @@ if "validation" not in st.session_state:
     st.stop()
 
 results = st.session_state["validation"]
-issues = [row for item in results for row in issue_rows(item["report"], item["ids_file"])]
+issues = [row for item in results for row in item["issues"]]
 reports = [item["report"] for item in results]
 st.subheader("Validation results")
 if all(report.get("status") for report in reports):

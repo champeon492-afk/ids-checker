@@ -135,7 +135,7 @@ def run_validations(ids_files: list[tuple[str, bytes]], ifc_data: bytes) -> list
                 html_report.to_file(str(html_path))
             except Exception as exc:
                 raise ValueError(f"{filename}: {exc}") from exc
-            results.append({"ids_file": filename, "report": result, "html": html_path.read_bytes()})
+            results.append({"ids_file": filename, "report": result, "html": html_path.read_bytes(), "issues": issue_rows(result, filename, model)})
         return results
 
 
@@ -145,7 +145,56 @@ def run_validation(ids_data: bytes, ifc_data: bytes) -> tuple[dict, bytes]:
     return item["report"], item["html"]
 
 
-def issue_rows(result: dict, ids_file: str = "") -> list[dict[str, str]]:
+def _ids_value(field) -> str:
+    if isinstance(field, dict):
+        if "simpleValue" in field:
+            return str(field["simpleValue"])
+        restriction = field.get("restriction", {})
+        if isinstance(restriction, dict):
+            choices = restriction.get("enumeration", [])
+            if isinstance(choices, dict):
+                choices = [choices]
+            values = [str(choice.get("@value", "")) for choice in choices if isinstance(choice, dict)]
+            return " or ".join(value for value in values if value)
+    return str(field or "") if not isinstance(field, dict) else ""
+
+
+def _issue_reason(requirement: dict, entity: dict, model=None) -> str:
+    """Turn IfcTester's generic result into an actionable IDS-specific message."""
+    raw = entity.get("reason") or "Requirement failed"
+    metadata = requirement.get("metadata") or {}
+    facet = (requirement.get("facet_type") or "").lower()
+    if facet != "property":
+        label = requirement.get("label") or requirement.get("description") or ""
+        return f"{label}: {raw}" if label and label.lower() not in raw.lower() else raw
+    pset = _ids_value(metadata.get("propertySet"))
+    prop = _ids_value(metadata.get("baseName"))
+    target = ".".join(part for part in (pset, prop) if part) or requirement.get("label", "property")
+    expected = _ids_value(metadata.get("value"))
+    if raw == "The required property set does not exist":
+        return f"Missing property set {pset}. Add it with the required property {prop} and a value." if pset and prop else f"Missing required property set {pset or target}."
+    if raw == "The property set does not contain the required property":
+        if model is not None and pset and prop and entity.get("global_id"):
+            try:
+                import ifcopenshell.util.element
+
+                element = model.by_guid(entity["global_id"])
+                properties = ifcopenshell.util.element.get_psets(element).get(pset, {})
+                if prop in properties:
+                    return f"Missing information: {target} exists but has no value. Populate the required value."
+                return f"Missing required property {prop} in {pset}. Add the property and provide a value."
+            except (RuntimeError, KeyError, TypeError):
+                pass
+        return f"Missing required property or value for {target}. Add or populate it."
+    if "data type" in raw.lower():
+        return f"Wrong data type for {target}. {raw}."
+    if "does not match" in raw.lower():
+        suffix = f" Expected {expected}." if expected else " Check the IDS value rule."
+        return f"Incorrect value for {target}. {raw}.{suffix}".replace("..", ".")
+    return f"{target}: {raw}"
+
+
+def issue_rows(result: dict, ids_file: str = "", model=None) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for spec in result.get("specifications", []):
         if spec.get("is_skipped"):
@@ -162,7 +211,7 @@ def issue_rows(result: dict, ids_file: str = "") -> list[dict[str, str]]:
                         "IFC class": entity.get("class") or entity.get("type") or "",
                         "GlobalId": entity.get("global_id") or entity.get("GlobalId") or "",
                         "Element": entity.get("name") or "",
-                        "Reason": entity.get("reason") or "Requirement failed",
+                        "Reason": _issue_reason(requirement, entity, model),
                     }
                 )
         if spec.get("total_applicable", 0) == 0 and not spec.get("status"):
