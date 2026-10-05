@@ -36,6 +36,7 @@ class ViewerUpload:
     ifc_data: bytes
     issues_data: bytes
     last_access: float
+    workspace_id: str = ""
     model: ifcopenshell.file | None = None
     browser_data: bytes | None = None
     model_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -128,7 +129,7 @@ class ViewerServer(ThreadingHTTPServer):
         super().__init__(("127.0.0.1", 0), ViewerHandler)
         self.uploads: dict[str, ViewerUpload] = {}
 
-    def publish(self, token: str, ifc_data: bytes, issues: list[dict]) -> None:
+    def publish(self, token: str, ifc_data: bytes, issues: list[dict], workspace_id: str = "") -> None:
         viewer_issues = [
             {
                 "globalId": row["GlobalId"],
@@ -147,8 +148,9 @@ class ViewerServer(ThreadingHTTPServer):
             self.uploads = {key: value for key, value in self.uploads.items() if now - value.last_access < 7200}
             if token in self.uploads:
                 self.uploads[token].last_access = now
+                self.uploads[token].workspace_id = workspace_id
             else:
-                self.uploads[token] = ViewerUpload(ifc_data, data, now)
+                self.uploads[token] = ViewerUpload(ifc_data, data, now, workspace_id)
 
 
 class ViewerHandler(BaseHTTPRequestHandler):
@@ -161,7 +163,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
             self.send_error(404, "Viewer session expired")
             return
         if parsed.path == "/":
-            body = _viewer_html(token).encode("utf-8")
+            body = _viewer_html(token, upload.workspace_id).encode("utf-8")
             kind = "text/html; charset=utf-8"
         elif parsed.path in _ASSETS:
             asset, kind = _ASSETS[parsed.path]
@@ -199,7 +201,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
         pass
 
 
-def _viewer_html(token: str) -> str:
+def _viewer_html(token: str, workspace_id: str = "") -> str:
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="/tokens.css?token={token}">
@@ -231,7 +233,7 @@ def _viewer_html(token: str) -> str:
     </section>
   </div>
 </main>
-<script>window.viewerToken="{token}";</script>
+<script>window.viewerToken={json.dumps(token)};window.viewerWorkspaceId={json.dumps(workspace_id)};</script>
 <script src="/viewer.js?token={token}"></script>
 </body></html>"""
 
@@ -245,13 +247,13 @@ def _get_server() -> ViewerServer:
         return _SERVER
 
 
-def show_building(ifc_data: bytes, issues: list[dict], fingerprint: str) -> None:
+def show_building(ifc_data: bytes, issues: list[dict], fingerprint: str, workspace_id: str = "") -> None:
     """Display the whole IFC model without putting its bytes in Streamlit messages."""
     server = _get_server()
     if st.session_state.get("viewer_fingerprint") != fingerprint:
         st.session_state["viewer_token"] = secrets.token_urlsafe(32)
         st.session_state["viewer_fingerprint"] = fingerprint
     token = st.session_state["viewer_token"]
-    server.publish(token, ifc_data, issues)
+    server.publish(token, ifc_data, issues, workspace_id)
     url = f"http://127.0.0.1:{server.server_port}/?token={token}"
     components.iframe(url, height=840, scrolling=False)

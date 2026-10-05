@@ -13,6 +13,7 @@ const inspector = byId("inspector");
 const propertiesPanel = byId("properties-panel");
 const browserPanel = byId("browser-panel");
 const browserTree = byId("browser-tree");
+const viewStorageKey = window.viewerWorkspaceId ? `ids-checker-view-${window.viewerWorkspaceId}` : "";
 let issues = [];
 let failureGroups = [];
 let shownFailures = 80;
@@ -22,8 +23,15 @@ let fragments;
 let selectedGuid = "";
 let selectedClass = "";
 let isolateSelected = false;
-let pendingGuid = "";
-let visualQueue = Promise.resolve();
+let visualRevision = 0;
+let appliedRevision = 0;
+let visualWork = null;
+let pendingFrame = false;
+let coloredIds = [];
+let opaqueIds = [];
+let ghostActive = false;
+const guidLocalIds = new Map();
+const classLocalIds = new Map();
 let selectionVersion = 0;
 let treeNodes = null;
 let treeIndex = null;
@@ -59,6 +67,34 @@ function buildFailureGroups() {
   byId("failure-count").textContent = failureGroups.length.toLocaleString();
   renderChart();
   renderFailures();
+}
+
+function rememberView() {
+  if (!viewStorageKey) return;
+  try {
+    sessionStorage.setItem(viewStorageKey, JSON.stringify({
+      selectedGuid,
+      selectedClass,
+      isolateSelected,
+      search: failureSearch.value,
+    }));
+  } catch (_) { /* Private browsing may disable session storage. */ }
+}
+
+function restoreView() {
+  if (!viewStorageKey) return;
+  try {
+    const state = JSON.parse(sessionStorage.getItem(viewStorageKey) || "null");
+    if (!state || typeof state !== "object") return;
+    selectedClass = failureGroups.some((group) => group.ifcClass === state.selectedClass) ? state.selectedClass : "";
+    selectedGuid = failureGroups.some((group) => group.globalId === state.selectedGuid) ? state.selectedGuid : "";
+    isolateSelected = !!(selectedGuid && state.isolateSelected);
+    failureSearch.value = typeof state.search === "string" ? state.search : "";
+    renderChart();
+    renderFailures();
+    updateSelectionControls();
+    if (selectedGuid) showProperties(selectedGuid, ++selectionVersion);
+  } catch (_) { /* An invalid or unavailable saved view should not block the model. */ }
 }
 
 function renderChart() {
@@ -139,6 +175,7 @@ function showRequirementIssue(group) {
   isolateSelected = false;
   renderFailures();
   updateSelectionControls();
+  rememberView();
   refreshVisuals(false).catch((error) => setStatus(error.message, true));
   showInspector("properties");
   propertiesPanel.replaceChildren();
@@ -209,7 +246,7 @@ async function frameBox(box) {
   const center = box.getCenter(new THREE.Vector3());
   const radius = Math.max(box.getSize(new THREE.Vector3()).length(), 1);
   const distance = radius * Math.max(1, 0.57 * canvas.clientHeight / Math.max(canvas.clientWidth, 1));
-  await world.camera.controls.setLookAt(center.x + distance * 0.9, center.y + distance * 0.7, center.z + distance * 0.9, center.x, center.y, center.z, true);
+  await world.camera.controls.setLookAt(center.x + distance * 0.9, center.y + distance * 0.7, center.z + distance * 0.9, center.x, center.y, center.z, false);
 }
 
 function updateSelectionControls() {
@@ -221,53 +258,88 @@ function updateSelectionControls() {
     : selectedClass ? `${selectedClass} failures` : "Building overview";
 }
 
-function refreshVisuals(frame = true) {
-  // Serialize material changes so rapid chart and list clicks cannot leave stale opacity behind.
-  visualQueue = visualQueue.catch(() => {}).then(async () => {
-    if (!model) return;
-    const guid = selectedGuid;
-    const ifcClass = selectedClass;
-    const isolate = isolateSelected;
-    await model.resetColor(undefined);
+function sameIds(left, right) {
+  return left.length === right.length && left.every((id, index) => id === right[index]);
+}
+
+async function localIdForGuid(guid) {
+  if (!guidLocalIds.has(guid)) guidLocalIds.set(guid, model.getLocalIdsByGuids([guid]).then(([id]) => id));
+  return guidLocalIds.get(guid);
+}
+
+async function localIdsForClass(ifcClass) {
+  if (!classLocalIds.has(ifcClass)) {
+    const guids = failureGroups.filter((group) => group.ifcClass === ifcClass && group.globalId).map((group) => group.globalId);
+    classLocalIds.set(ifcClass, model.getLocalIdsByGuids(guids).then((ids) => ids.filter((id) => id != null)));
+  }
+  return classLocalIds.get(ifcClass);
+}
+
+async function applyVisualState(revision, frame) {
+  const guid = selectedGuid;
+  const ifcClass = selectedClass;
+  const isolate = isolateSelected;
+  const classIds = ifcClass ? await localIdsForClass(ifcClass) : [];
+  const id = guid ? await localIdForGuid(guid) : null;
+  const elementIds = id == null ? [] : [id];
+  const nextColored = elementIds.length ? elementIds : classIds;
+  const nextOpaque = isolate && elementIds.length ? elementIds : classIds;
+  const nextGhost = !!((isolate && elementIds.length) || (ifcClass && classIds.length));
+
+  if (!sameIds(coloredIds, nextColored)) {
+    if (coloredIds.length) await model.resetColor(coloredIds);
+    if (nextColored.length) await model.setColor(nextColored, new THREE.Color("#baff16"));
+    coloredIds = nextColored;
+  }
+  if (!nextGhost && ghostActive) {
     await model.resetOpacity(undefined);
-    let focusIds = [];
-    let frameIds = [];
-    if (ifcClass) {
-      const guids = failureGroups.filter((group) => group.ifcClass === ifcClass && group.globalId).map((group) => group.globalId);
-      focusIds = (await model.getLocalIdsByGuids(guids)).filter((id) => id != null);
-    }
-    if (guid) {
-      const [id] = await model.getLocalIdsByGuids([guid]);
-      if (id != null) {
-        if (isolate || !ifcClass) focusIds = [id];
-        frameIds = [id];
-        await model.setColor([id], new THREE.Color("#baff16"));
+  } else if (nextGhost) {
+    if (!ghostActive) await model.setOpacity(undefined, 0.12);
+    else if (!sameIds(opaqueIds, nextOpaque) && opaqueIds.length) await model.setOpacity(opaqueIds, 0.12);
+    if (!ghostActive || !sameIds(opaqueIds, nextOpaque)) await model.resetOpacity(nextOpaque);
+  }
+  ghostActive = nextGhost;
+  opaqueIds = nextGhost ? nextOpaque : [];
+
+  if (frame && revision === visualRevision) {
+    const frameIds = elementIds.length ? elementIds : classIds;
+    if (frameIds.length) {
+      const box = await model.getMergedBox(frameIds);
+      if (!box.isEmpty()) await frameBox(box);
+    } else if (!guid && !ifcClass) await frameBox(model.box);
+  }
+  fragments.core.update(true);
+  if (revision !== visualRevision) return;
+  if (guid && !elementIds.length) setStatus("This element has no viewable geometry. Its IFC properties are shown.");
+  else if (guid && isolate) setStatus("Selected element is opaque; other elements are transparent.");
+  else if (ifcClass) setStatus(`${ifcClass} failures are highlighted; other elements are transparent.`);
+  else if (guid) setStatus("Selected element highlighted in lime. Building context remains visible.");
+  else setStatus(`Whole building loaded · ${failureGroups.length.toLocaleString()} failed elements`);
+}
+
+function refreshVisuals(frame = true) {
+  visualRevision += 1;
+  pendingFrame ||= frame;
+  if (!model) return Promise.resolve();
+  if (!visualWork) {
+    let failed = false;
+    visualWork = (async () => {
+      while (appliedRevision < visualRevision) {
+        const revision = visualRevision;
+        const shouldFrame = pendingFrame;
+        pendingFrame = false;
+        await applyVisualState(revision, shouldFrame);
+        appliedRevision = revision;
       }
-    } else if (focusIds.length) {
-      await model.setColor(focusIds, new THREE.Color("#baff16"));
-    }
-    const ghost = (guid && isolate) || (!isolate && ifcClass);
-    if (ghost && focusIds.length) {
-      await model.setOpacity(undefined, 0.12);
-      await model.resetOpacity(focusIds);
-    }
-    if (frame) {
-      const targetIds = frameIds.length ? frameIds : focusIds;
-      if (targetIds.length) {
-        const box = await model.getMergedBox(targetIds);
-        if (!box.isEmpty()) await frameBox(box);
-      } else if (!guid && !ifcClass) {
-        await frameBox(model.box);
-      }
-    }
-    fragments.core.update(true);
-    if (guid && !focusIds.length && !ifcClass) setStatus("This element has no viewable geometry. Its IFC properties are shown.");
-    else if (guid && isolate) setStatus("Selected element is opaque; other elements are transparent.");
-    else if (ifcClass) setStatus(`${ifcClass} failures are highlighted; other elements are transparent.`);
-    else if (guid) setStatus("Selected element highlighted in lime. Building context remains visible.");
-    else setStatus(`Whole building loaded · ${failureGroups.length.toLocaleString()} failed elements`);
-  });
-  return visualQueue;
+    })().catch((error) => {
+      failed = true;
+      throw error;
+    }).finally(() => {
+      visualWork = null;
+      if (!failed && appliedRevision < visualRevision) refreshVisuals(false).catch((error) => setStatus(error.message, true));
+    });
+  }
+  return visualWork;
 }
 
 async function selectClass(ifcClass) {
@@ -280,6 +352,7 @@ async function selectClass(ifcClass) {
   renderChart();
   renderFailures();
   updateSelectionControls();
+  rememberView();
   if (!model) { setStatus("Loading model before showing the selected IFC class…"); return; }
   await refreshVisuals();
 }
@@ -293,6 +366,7 @@ async function clearSelection() {
   renderChart();
   renderFailures();
   updateSelectionControls();
+  rememberView();
   await refreshVisuals();
 }
 
@@ -302,9 +376,9 @@ async function selectGuid(guid) {
   const version = selectionVersion;
   renderFailures();
   updateSelectionControls();
+  rememberView();
   showProperties(guid, version);
   if (!model) {
-    pendingGuid = guid;
     setStatus("Loading model before locating the selected element…");
     return;
   }
@@ -377,12 +451,13 @@ async function loadBrowser() {
 }
 
 function wireControls() {
-  failureSearch.addEventListener("input", () => { shownFailures = 80; renderFailures(); });
+  failureSearch.addEventListener("input", () => { shownFailures = 80; renderFailures(); rememberView(); });
   moreFailures.addEventListener("click", () => { shownFailures += 80; renderFailures(); });
   byId("isolate-selected").addEventListener("click", () => {
     if (!selectedGuid) return;
     isolateSelected = !isolateSelected;
     updateSelectionControls();
+    rememberView();
     refreshVisuals(false).catch((error) => setStatus(error.message, true));
   });
   byId("clear-selection").addEventListener("click", () => clearSelection().catch((error) => setStatus(error.message, true)));
@@ -400,6 +475,7 @@ async function start() {
   setStatus("Preparing IFC model…");
   issues = await getJson("/issues");
   buildFailureGroups();
+  restoreView();
   const response = await fetch(`/model?token=${token}`);
   if (!response.ok) throw new Error("The IFC model could not be retrieved from the local viewer service.");
   const bytes = new Uint8Array(await response.arrayBuffer());
@@ -430,8 +506,7 @@ async function start() {
   byId("reset-view").disabled = false;
   updateSelectionControls();
   setStatus(`Whole building loaded · ${failureGroups.length.toLocaleString()} failed elements`);
-  if (pendingGuid) selectGuid(pendingGuid).catch((error) => setStatus(error.message, true));
-  else if (selectedClass) refreshVisuals().catch((error) => setStatus(error.message, true));
+  if (selectedGuid || selectedClass) refreshVisuals().catch((error) => setStatus(error.message, true));
 }
 
 start().catch((error) => { console.error(error); setStatus(`Viewer could not load: ${error.message}`, true); });

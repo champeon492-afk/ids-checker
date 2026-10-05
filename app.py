@@ -5,33 +5,71 @@ from __future__ import annotations
 import hashlib
 import io
 import zipfile
+from pathlib import Path
 
 import streamlit as st
 
 from building_viewer import show_building
 from validator import csv_bytes, json_bytes, parse_ids_preview, run_validations
+from workspace_store import create_project, load_project, project_path, save_project
 
 
 st.set_page_config(page_title="IDS Model Validator", page_icon="✅", layout="wide")
 st.title("IDS Model Validator")
 st.caption("Check one IFC model against one or more IDS information requirements files.")
 
-left, right = st.columns(2)
-with left:
-    ids_uploads = st.file_uploader(
-        "1. Upload IDS requirements",
-        type=["ids"],
-        accept_multiple_files=True,
-        help="Select one or more Information Delivery Specification files",
-    )
-with right:
-    ifc_file = st.file_uploader("2. Upload IFC model", type=["ifc"], help="An Industry Foundation Classes model")
+workspace_id = st.query_params.get("workspace", "")
+project = None
+if workspace_id:
+    try:
+        project = load_project(workspace_id)
+    except (ValueError, FileNotFoundError) as exc:
+        st.warning(str(exc))
 
-if not ids_uploads:
-    st.info("Upload one or more IDS files to see their checks and target elements.")
-    st.stop()
+with st.expander("Open a saved validation project", expanded=project is None):
+    project_upload = st.file_uploader("Choose an IDS Checker project (.idscheck)", type=["idscheck"], key="project_upload")
+    st.caption("A project contains the IFC model, all IDS files, validation results and reports. Choose the file you previously saved.")
+if project_upload is not None:
+    project_data = project_upload.getvalue()
+    project_digest = hashlib.sha256(project_data).hexdigest()
+    if st.session_state.get("opened_project_digest") != project_digest:
+        try:
+            imported_id = save_project(project_data)
+        except ValueError as exc:
+            st.error(f"Could not open the project: {exc}")
+            st.stop()
+        st.session_state["opened_project_digest"] = project_digest
+        st.query_params["workspace"] = imported_id
+        st.rerun()
 
-ids_files = [(upload.name, upload.getvalue()) for upload in ids_uploads]
+if project is not None:
+    st.info(f"Restored local project · {project['ifc_filename']} · {len(project['ids_files'])} IDS file(s)")
+    if st.button("Start a new validation"):
+        st.query_params.clear()
+        for key in ("validation", "fingerprint", "viewer_fingerprint", "viewer_token", "opened_project_digest", "project_upload"):
+            st.session_state.pop(key, None)
+        st.rerun()
+    ids_files = project["ids_files"]
+    ifc_data = project["ifc_data"]
+    ifc_filename = project["ifc_filename"]
+else:
+    left, right = st.columns(2)
+    with left:
+        ids_uploads = st.file_uploader(
+            "1. Upload IDS requirements",
+            type=["ids"],
+            accept_multiple_files=True,
+            help="Select one or more Information Delivery Specification files",
+        )
+    with right:
+        ifc_file = st.file_uploader("2. Upload IFC model", type=["ifc"], help="An Industry Foundation Classes model")
+    if not ids_uploads:
+        st.info("Upload one or more IDS files to see their checks and target elements.")
+        st.stop()
+    ids_files = [(upload.name, upload.getvalue()) for upload in ids_uploads]
+    ifc_data = ifc_file.getvalue() if ifc_file else None
+    ifc_filename = ifc_file.name if ifc_file else ""
+
 preview = []
 for filename, data in ids_files:
     try:
@@ -44,33 +82,37 @@ st.subheader("Checks defined by the IDS files")
 st.dataframe(preview, width="stretch", hide_index=True)
 st.caption("All uploaded IDS files are checked against the same IFC model. Target facets select the elements; the validation engine applies the full IDS rules.")
 
-if not ifc_file:
+if ifc_data is None:
     st.info("Upload an IFC model to run these checks.")
     st.stop()
 
-ifc_data = ifc_file.getvalue()
 digest = hashlib.sha256()
 digest.update(ifc_data)
 for filename, data in ids_files:
     digest.update(filename.encode("utf-8"))
     digest.update(hashlib.sha256(data).digest())
 fingerprint = digest.hexdigest()
-if st.session_state.get("fingerprint") != fingerprint:
+if project is None and st.session_state.get("fingerprint") != fingerprint:
     st.session_state.pop("validation", None)
 
-if st.button("Run validation", type="primary"):
+if st.button("Re-run validation" if project is not None else "Run validation", type="primary"):
     with st.spinner(f"Checking the IFC model against {len(ids_files)} IDS file(s)..."):
         try:
-            st.session_state["validation"] = run_validations(ids_files, ifc_data)
+            results = run_validations(ids_files, ifc_data)
+            saved_data = create_project(ids_files, ifc_filename, ifc_data, results)
+            workspace_id = save_project(saved_data)
+            project = load_project(workspace_id)
+            st.session_state["validation"] = results
             st.session_state["fingerprint"] = fingerprint
+            st.query_params["workspace"] = workspace_id
         except Exception as exc:
             st.error(f"Validation could not complete: {exc}")
             st.stop()
 
-if "validation" not in st.session_state:
+if project is None and "validation" not in st.session_state:
     st.stop()
 
-results = st.session_state["validation"]
+results = project["results"] if project is not None else st.session_state["validation"]
 issues = [row for item in results for row in item["issues"]]
 reports = [item["report"] for item in results]
 st.subheader("Validation results")
@@ -89,7 +131,7 @@ cols[4].metric("Issues listed", len(issues))
 tabs = st.tabs(["Building viewer", "Issues", "By IDS file", "Downloads"])
 with tabs[0]:
     st.caption("Choose a failed element on the left to locate it in the building. Use Properties and Model browser inside the viewer to inspect the IFC data.")
-    show_building(ifc_data, issues, fingerprint)
+    show_building(ifc_data, issues, fingerprint, workspace_id)
 with tabs[1]:
     if issues:
         st.dataframe(issues, width="stretch", hide_index=True)
@@ -109,6 +151,15 @@ with tabs[2]:
                     mark = "✅" if requirement.get("status") else "❌"
                     st.write(f"{mark} {requirement.get('description') or requirement.get('label', 'Requirement')} — {requirement.get('total_pass', 0)} passed, {requirement.get('total_fail', 0)} failed")
 with tabs[3]:
+    if workspace_id:
+        st.download_button(
+            "Save complete project (.idscheck)",
+            project_path(workspace_id).read_bytes(),
+            file_name=f"{Path(ifc_filename).stem or 'ids-validation'}.idscheck",
+            mime="application/octet-stream",
+            on_click="ignore",
+        )
+        st.caption(f"This validation is also saved locally at: {project_path(workspace_id)}")
     st.download_button("Download issues CSV", csv_bytes(issues), file_name="ids-validation-issues.csv", mime="text/csv")
     full_report = [{"ids_file": item["ids_file"], "report": item["report"]} for item in results]
     st.download_button("Download full JSON report", json_bytes(full_report), file_name="ids-validation-report.json", mime="application/json")

@@ -9,4 +9,6 @@ __pycache__/
 !frontend/package-lock.json
 *.html
 frontend/node_modules/
+local_workspaces/
+*.idscheck
 !.streamlit/config.toml
