@@ -25,5 +25,5 @@ if errorlevel 1 (
 
 echo Opening IDS Model Validator at http://localhost:8501
 echo Keep this window open while using the app. Press Ctrl+C to stop it.
-".venv\Scripts\python.exe" -m streamlit run app.py --server.address=127.0.0.1 --server.port=8501
+".venv\Scripts\python.exe" -m streamlit run app.py --server.address=127.0.0.1 --server.port=8501 --browser.gatherUsageStats=false
 pause

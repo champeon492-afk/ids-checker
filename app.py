@@ -40,7 +40,7 @@ for filename, data in ids_files:
         st.stop()
 
 st.subheader("Checks defined by the IDS files")
-st.dataframe(preview, use_container_width=True, hide_index=True)
+st.dataframe(preview, width="stretch", hide_index=True)
 st.caption("All uploaded IDS files are checked against the same IFC model. Target facets select the elements; the validation engine applies the full IDS rules.")
 
 if not ifc_file:
@@ -88,7 +88,7 @@ cols[4].metric("Issues listed", len(issues))
 tabs = st.tabs(["Issues", "By IDS file", "Downloads"])
 with tabs[0]:
     if issues:
-        st.dataframe(issues, use_container_width=True, hide_index=True)
+        st.dataframe(issues, width="stretch", hide_index=True)
     else:
         st.info("No element-level issues were reported.")
 with tabs[1]:
