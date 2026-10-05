@@ -26,6 +26,7 @@ class ValidatorTests(unittest.TestCase):
         rows = parse_ids_preview(IDS_SAMPLE)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["Specification"], "Wall fire rating")
+        self.assertEqual(parse_ids_preview(IDS_SAMPLE, "walls.ids")[0]["IDS file"], "walls.ids")
         self.assertIn("IFCWALL", rows[0]["Target elements"])
         self.assertIn("Pset_WallCommon.FireRating", rows[0]["Requirement"])
 

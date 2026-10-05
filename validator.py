@@ -68,7 +68,7 @@ def _facet_description(facet: ET.Element) -> str:
     return kind
 
 
-def parse_ids_preview(data: bytes) -> list[dict[str, str]]:
+def parse_ids_preview(data: bytes, filename: str = "") -> list[dict[str, str]]:
     """Make one readable row per requirement, preserving all applicability facets."""
     if b"<!DOCTYPE" in data.upper() or b"<!ENTITY" in data.upper():
         raise ValueError("IDS files with DTD or entity declarations are not supported.")
@@ -93,6 +93,7 @@ def parse_ids_preview(data: bytes) -> list[dict[str, str]]:
         for facet in facets or [None]:
             rows.append(
                 {
+                    "IDS file": filename,
                     "Specification": spec.attrib.get("name", "Unnamed specification"),
                     "IFC version": spec.attrib.get("ifcVersion", ""),
                     "Target elements": " AND ".join(targets) or "All applicable IFC data",
@@ -108,39 +109,54 @@ def parse_ids_preview(data: bytes) -> list[dict[str, str]]:
     return rows
 
 
-def run_validation(ids_data: bytes, ifc_data: bytes) -> tuple[dict, bytes]:
-    """Run IfcTester with temporary files and return JSON plus HTML report bytes."""
+def run_validations(ids_files: list[tuple[str, bytes]], ifc_data: bytes) -> list[dict]:
+    """Validate one IFC model against every IDS file and preserve source names."""
     import ifcopenshell
     import ifctester
     from ifctester import reporter
 
+    if not ids_files:
+        raise ValueError("Upload at least one IDS file.")
     with tempfile.TemporaryDirectory(prefix="ids-validator-") as folder:
-        ids_path = Path(folder) / "requirements.ids"
         ifc_path = Path(folder) / "model.ifc"
-        ids_path.write_bytes(ids_data)
         ifc_path.write_bytes(ifc_data)
-        specifications = ifctester.open(str(ids_path), validate=True)
         model = ifcopenshell.open(str(ifc_path))
-        specifications.validate(model)
-        result = reporter.Json(specifications).report()
-        html_report = reporter.Html(specifications)
-        html_report.report()
-        html_path = Path(folder) / "report.html"
-        html_report.to_file(str(html_path))
-        return result, html_path.read_bytes()
+        results = []
+        for index, (filename, ids_data) in enumerate(ids_files, start=1):
+            ids_path = Path(folder) / f"requirements-{index}.ids"
+            ids_path.write_bytes(ids_data)
+            try:
+                specifications = ifctester.open(str(ids_path), validate=True)
+                specifications.validate(model)
+                result = reporter.Json(specifications).report()
+                html_report = reporter.Html(specifications)
+                html_report.report()
+                html_path = Path(folder) / f"report-{index}.html"
+                html_report.to_file(str(html_path))
+            except Exception as exc:
+                raise ValueError(f"{filename}: {exc}") from exc
+            results.append({"ids_file": filename, "report": result, "html": html_path.read_bytes()})
+        return results
 
 
-def issue_rows(result: dict) -> list[dict[str, str]]:
+def run_validation(ids_data: bytes, ifc_data: bytes) -> tuple[dict, bytes]:
+    """Compatibility wrapper for a single IDS file."""
+    item = run_validations([("requirements.ids", ids_data)], ifc_data)[0]
+    return item["report"], item["html"]
+
+
+def issue_rows(result: dict, ids_file: str = "") -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for spec in result.get("specifications", []):
         if spec.get("is_skipped"):
             continue
         if not spec.get("status") and not spec.get("requirements") and spec.get("total_applicable", 0) != 0:
-            rows.append({"Specification": spec.get("name", ""), "Requirement": "Applicable elements", "IFC class": "", "GlobalId": "", "Element": "", "Reason": "Specification failed; check its applicability and cardinality."})
+            rows.append({"IDS file": ids_file, "Specification": spec.get("name", ""), "Requirement": "Applicable elements", "IFC class": "", "GlobalId": "", "Element": "", "Reason": "Specification failed; check its applicability and cardinality."})
         for requirement in spec.get("requirements", []):
             for entity in requirement.get("failed_entities", []):
                 rows.append(
                     {
+                        "IDS file": ids_file,
                         "Specification": spec.get("name", ""),
                         "Requirement": requirement.get("description") or requirement.get("label", ""),
                         "IFC class": entity.get("class") or entity.get("type") or "",
@@ -150,12 +166,12 @@ def issue_rows(result: dict) -> list[dict[str, str]]:
                     }
                 )
         if spec.get("total_applicable", 0) == 0 and not spec.get("status"):
-            rows.append({"Specification": spec.get("name", ""), "Requirement": "Applicable elements", "IFC class": "", "GlobalId": "", "Element": "", "Reason": "No matching IFC elements were found for a required specification."})
+            rows.append({"IDS file": ids_file, "Specification": spec.get("name", ""), "Requirement": "Applicable elements", "IFC class": "", "GlobalId": "", "Element": "", "Reason": "No matching IFC elements were found for a required specification."})
     return rows
 
 
 def csv_bytes(rows: list[dict[str, str]]) -> bytes:
-    fields = ["Specification", "Requirement", "IFC class", "GlobalId", "Element", "Reason"]
+    fields = ["IDS file", "Specification", "Requirement", "IFC class", "GlobalId", "Element", "Reason"]
     stream = io.StringIO()
     writer = csv.DictWriter(stream, fieldnames=fields)
     writer.writeheader()

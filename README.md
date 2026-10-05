@@ -4,7 +4,9 @@ A local web app that reads an Information Delivery Specification (`.ids`), shows
 
 ## Run locally
 
-Use Python 3.11 or 3.12. In a terminal inside this folder:
+Use Python 3.12. On Windows, double-click `start-validator.cmd` and keep its window open while using the app. This starts the local server and opens the app in your browser. If the browser says **Connection lost**, run the launcher again and refresh the page.
+
+Or, in a terminal inside this folder:
 
 ```powershell
 py -3.12 -m venv .venv
@@ -12,13 +14,13 @@ py -3.12 -m venv .venv
 .venv\Scripts\python -m streamlit run app.py
 ```
 
-The app opens in your browser. Upload one `.ids` file and one `.ifc` file, review the checks, and select **Run validation**. Uploaded files are processed by the local Streamlit process and deleted from its temporary folder after each run.
+The app opens in your browser. Upload one or more `.ids` files and one `.ifc` file, review the checks, and select **Run validation**. Uploaded files are processed by the local Streamlit process; its temporary disk copies are deleted after each run.
 
 ## Results
 
-- Summary: passing and failing checks, matching elements, and specifications.
-- Issues: one row per failed requirement and IFC element, including `GlobalId` and the reason reported by IfcTester.
-- Downloads: JSON with full validation details, CSV of failures, and an HTML report.
+- Summary: passing and failing checks across every uploaded IDS file.
+- Issues: one row per failed requirement and IFC element, including the source IDS file, `GlobalId`, and the reason reported by IfcTester.
+- Downloads: JSON with full validation details, CSV of failures, and an HTML report for one IDS file or a ZIP of HTML reports for several IDS files.
 
 The preview is a readable view of the IDS rules. IfcTester performs the actual standards-based validation. A required specification with no applicable model elements is reported as a failure according to the IDS rules.
 
