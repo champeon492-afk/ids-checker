@@ -1,0 +1,47 @@
+/* Orion Twin · sage and signal design tokens */
+:root {
+  color-scheme: dark;
+  --ot-matte: #c5c5c5;
+  --ot-hero: #8c978d;
+  --ot-hero-deep: #758277;
+  --ot-ink: #0a0c0b;
+  --ot-card: #171a18;
+  --ot-card-raised: #222724;
+  --ot-glass: rgb(48 58 51 / 37%);
+  --ot-glass-border: rgb(248 251 246 / 18%);
+  --ot-stroke: #3b433d;
+  --ot-grid: #566057;
+  --ot-text: #f6f8f5;
+  --ot-text-secondary: #bdc7be;
+  --ot-text-muted: #88938a;
+  --ot-text-inverse: #0a0c0b;
+  --ot-lime: #baff16;
+  --ot-lime-soft: #dbff85;
+  --ot-alert: #f47a79;
+  --ot-good: #a8e4ae;
+  --ot-focus: #d9ff8c;
+
+  --ot-font: Inter, "Segoe UI", Arial, sans-serif;
+  --ot-size-2xs: .625rem;
+  --ot-size-xs: .6875rem;
+  --ot-size-sm: .75rem;
+  --ot-size-md: .875rem;
+  --ot-size-lg: 1.125rem;
+  --ot-size-xl: 1.5rem;
+  --ot-size-display: clamp(2.5rem, 4.6vw, 4.75rem);
+
+  --ot-space-1: .25rem;
+  --ot-space-2: .5rem;
+  --ot-space-3: .75rem;
+  --ot-space-4: 1rem;
+  --ot-space-5: 1.5rem;
+  --ot-space-6: 2rem;
+  --ot-space-7: 3rem;
+  --ot-radius-sm: .55rem;
+  --ot-radius-md: 1rem;
+  --ot-radius-card: 1.6rem;
+  --ot-radius-pill: 999px;
+  --ot-shadow: 0 20px 50px rgb(0 0 0 / 22%);
+  --ot-ease: cubic-bezier(.2,.7,.2,1);
+  --ot-duration: 170ms;
+}

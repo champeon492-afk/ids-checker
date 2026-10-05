@@ -88,7 +88,7 @@ cols[4].metric("Issues listed", len(issues))
 
 tabs = st.tabs(["Building viewer", "Issues", "By IDS file", "Downloads"])
 with tabs[0]:
-    st.caption("Explore the complete IFC building. Choose a failed element in the viewer to locate and highlight it while the rest of the model stays visible.")
+    st.caption("Choose a failed element on the left to locate it in the building. Use Properties and Model browser inside the viewer to inspect the IFC data.")
     show_building(ifc_data, issues, fingerprint)
 with tabs[1]:
     if issues:
