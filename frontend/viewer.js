@@ -26,6 +26,7 @@ let world;
 let fragments;
 let selectedGuid = "";
 let selectedClass = "";
+let selectedRelationshipGroup = null;
 let isolateSelected = false;
 let pickEnabled = true;
 let selectedName = "";
@@ -88,6 +89,7 @@ function rememberView() {
     sessionStorage.setItem(viewStorageKey, JSON.stringify({
       selectedGuid,
       selectedClass,
+      relationshipGroup: selectedRelationshipGroup ? { stage: selectedRelationshipGroup.stage, key: selectedRelationshipGroup.key, label: selectedRelationshipGroup.label, path: relationshipSelection.slice(0, 4) } : null,
       isolateSelected,
       pickEnabled,
       browserOpen,
@@ -103,6 +105,13 @@ function restoreView() {
     if (!state || typeof state !== "object") return;
     selectedClass = failureGroups.some((group) => group.ifcClass === state.selectedClass) ? state.selectedClass : "";
     selectedGuid = typeof state.selectedGuid === "string" && state.selectedGuid.length <= 64 ? state.selectedGuid : "";
+    const savedGroup = state.relationshipGroup;
+    if (!selectedGuid && savedGroup && Number.isInteger(savedGroup.stage) && savedGroup.stage >= 0 && savedGroup.stage < 5 && typeof savedGroup.key === "string" && savedGroup.key.length <= 64) {
+      selectedRelationshipGroup = { stage: savedGroup.stage, key: savedGroup.key, label: String(savedGroup.label || "Selected group").slice(0, 120), guids: [] };
+      if (Array.isArray(savedGroup.path)) for (let stage = 0; stage < 4; stage += 1) relationshipSelection[stage] = typeof savedGroup.path[stage] === "string" ? savedGroup.path[stage].slice(0, 64) : "";
+      relationshipSelection[savedGroup.stage] = savedGroup.key;
+      selectedClass = "";
+    }
     selectedName = failureGroups.find((group) => group.globalId === selectedGuid)?.element || "";
     isolateSelected = !!(selectedGuid && state.isolateSelected);
     pickEnabled = state.pickEnabled !== false;
@@ -114,6 +123,7 @@ function restoreView() {
     updateSelectionControls();
     if (selectedGuid) showProperties(selectedGuid, ++selectionVersion);
     if (state.browserOpen) setBrowserOpen(true);
+    else if (selectedRelationshipGroup) loadRelationshipBrowser().catch((error) => setStatus(error.message, true));
   } catch (_) { /* An invalid or unavailable saved view should not block the model. */ }
 }
 
@@ -219,11 +229,13 @@ function clearProperties() {
 function showRequirementIssue(group) {
   selectionVersion += 1;
   selectedGuid = "";
+  selectedRelationshipGroup = null;
   selectedName = "";
   selectedRequirementGroup = group;
   isolateSelected = false;
   renderFailures();
   renderSelectedIssues();
+  if (browserOpen) renderRelationships();
   updateSelectionControls();
   rememberView();
   refreshVisuals(false).catch((error) => setStatus(error.message, true));
@@ -299,10 +311,11 @@ async function frameBox(box) {
 function updateSelectionControls() {
   byId("isolate-selected").disabled = !selectedGuid;
   byId("isolate-selected").setAttribute("aria-pressed", String(isolateSelected && !!selectedGuid));
-  byId("clear-selection").disabled = !selectedGuid && !selectedClass && !selectedRequirementGroup;
+  byId("clear-selection").disabled = !selectedGuid && !selectedClass && !selectedRequirementGroup && !selectedRelationshipGroup;
   byId("view-title").textContent = selectedGuid
     ? (selectedName || failureGroups.find((group) => group.globalId === selectedGuid)?.element || "Selected element")
-    : selectedClass ? `${selectedClass} failures` : "Building overview";
+    : selectedRelationshipGroup ? `${selectedRelationshipGroup.label} · ${selectedRelationshipGroup.guids.length.toLocaleString()} elements`
+      : selectedClass ? `${selectedClass} failures` : "Building overview";
 }
 
 function sameIds(left, right) {
@@ -322,16 +335,24 @@ async function localIdsForClass(ifcClass) {
   return classLocalIds.get(ifcClass);
 }
 
+async function localIdsForRelationshipGroup(group) {
+  if (!group.idsPromise) group.idsPromise = model.getLocalIdsByGuids(group.guids).then((ids) => ids.filter((id) => id != null));
+  return group.idsPromise;
+}
+
 async function applyVisualState(revision, frame) {
   const guid = selectedGuid;
   const ifcClass = selectedClass;
+  const relationshipGroup = selectedRelationshipGroup;
   const isolate = isolateSelected;
   const classIds = ifcClass ? await localIdsForClass(ifcClass) : [];
+  const groupIds = relationshipGroup?.guids.length ? await localIdsForRelationshipGroup(relationshipGroup) : [];
   const id = guid ? await localIdForGuid(guid) : null;
   const elementIds = id == null ? [] : [id];
-  const nextColored = elementIds.length ? elementIds : classIds;
-  const nextOpaque = isolate && elementIds.length ? elementIds : classIds;
-  const nextGhost = !!((isolate && elementIds.length) || (ifcClass && classIds.length));
+  if (revision !== visualRevision) return;
+  const nextColored = elementIds.length ? elementIds : groupIds.length ? groupIds : classIds;
+  const nextOpaque = isolate && elementIds.length ? elementIds : groupIds.length ? groupIds : classIds;
+  const nextGhost = !!((isolate && elementIds.length) || (ifcClass && classIds.length) || (relationshipGroup && groupIds.length));
 
   if (!sameIds(coloredIds, nextColored)) {
     if (coloredIds.length) await model.resetColor(coloredIds);
@@ -349,15 +370,17 @@ async function applyVisualState(revision, frame) {
   opaqueIds = nextGhost ? nextOpaque : [];
 
   if (frame && revision === visualRevision) {
-    const frameIds = elementIds.length ? elementIds : classIds;
+    const frameIds = elementIds.length ? elementIds : groupIds.length ? groupIds : classIds;
     if (frameIds.length) {
-      const box = await model.getMergedBox(frameIds);
+      const box = relationshipGroup?.stage === 0 && groupIds.length === frameIds.length ? model.box : await model.getMergedBox(frameIds);
       if (!box.isEmpty()) await frameBox(box);
     } else if (!guid && !ifcClass) await frameBox(model.box);
   }
   fragments.core.update(true);
   if (revision !== visualRevision) return;
   if (guid && !elementIds.length) setStatus("This element has no viewable geometry. Its IFC properties are shown.");
+  else if (relationshipGroup && !groupIds.length) setStatus(`${relationshipGroup.label} contains no viewable model elements.`);
+  else if (relationshipGroup) setStatus(`${groupIds.length.toLocaleString()} elements in ${relationshipGroup.label} highlighted; other elements are transparent.`);
   else if (guid && !failureGroups.some((group) => group.globalId === guid)) setStatus("Selected element has no recorded IDS errors.");
   else if (guid && isolate) setStatus("Selected element is opaque; other elements are transparent.");
   else if (ifcClass) setStatus(`${ifcClass} failures are highlighted; other elements are transparent.`);
@@ -392,6 +415,7 @@ function refreshVisuals(frame = true) {
 
 async function selectClass(ifcClass) {
   selectedClass = selectedClass === ifcClass ? "" : ifcClass;
+  selectedRelationshipGroup = null;
   selectedGuid = "";
   selectedName = "";
   selectedRequirementGroup = null;
@@ -402,6 +426,7 @@ async function selectClass(ifcClass) {
   renderChart();
   renderFailures();
   renderSelectedIssues();
+  if (browserOpen) renderRelationships();
   updateSelectionControls();
   rememberView();
   if (!model) { setStatus("Loading model before showing the selected IFC class…"); return; }
@@ -410,6 +435,7 @@ async function selectClass(ifcClass) {
 
 async function clearSelection() {
   selectedClass = "";
+  selectedRelationshipGroup = null;
   selectedGuid = "";
   selectedName = "";
   selectedRequirementGroup = null;
@@ -419,6 +445,7 @@ async function clearSelection() {
   renderChart();
   renderFailures();
   renderSelectedIssues();
+  if (browserOpen) renderRelationships();
   updateSelectionControls();
   rememberView();
   await refreshVisuals();
@@ -433,6 +460,7 @@ async function selectGuid(guid, options = {}) {
     renderChart();
   }
   selectedGuid = guid;
+  selectedRelationshipGroup = null;
   selectedName = group?.element || "";
   selectedRequirementGroup = null;
   if (treeIndex) syncRelationshipToGuid(guid);
@@ -456,8 +484,8 @@ async function pickElement(event, renderCanvas) {
   const revision = ++pickRevision;
   const data = { camera: world.camera.three, mouse: new THREE.Vector2(event.clientX, event.clientY), dom: renderCanvas };
   let hit;
-  if (selectedClass) {
-    const allowed = new Set(await localIdsForClass(selectedClass));
+  if (selectedClass || selectedRelationshipGroup) {
+    const allowed = new Set(selectedRelationshipGroup ? await localIdsForRelationshipGroup(selectedRelationshipGroup) : await localIdsForClass(selectedClass));
     const hits = await model.raycastAll(data);
     hit = hits?.find((item) => allowed.has(item.localId));
   } else {
@@ -465,7 +493,7 @@ async function pickElement(event, renderCanvas) {
   }
   if (revision !== pickRevision) return;
   if (!hit) {
-    setStatus(selectedClass ? `Click a highlighted ${selectedClass} element to inspect it.` : "No model element was found at that point.");
+    setStatus(selectedRelationshipGroup ? `Click a highlighted element in ${selectedRelationshipGroup.label} to inspect it.` : selectedClass ? `Click a highlighted ${selectedClass} element to inspect it.` : "No model element was found at that point.");
     return;
   }
   const [guid] = await model.getGuidsByLocalIds([hit.localId]);
@@ -533,6 +561,42 @@ function relationshipCandidates(stage) {
   return elements.filter((item) => !relationshipSelection[4] || item.ifcClass === relationshipSelection[4])
     .sort((a, b) => a.name.localeCompare(b.name))
     .map((item) => ({ key: item.globalId, name: item.name, meta: item.ifcClass }));
+}
+
+function relationshipGroupForTile(stage, key, label) {
+  const elements = stage === 4 ? scopedElements().filter((item) => item.ifcClass === key)
+    : treeNodes.filter((item) => !spatialClasses.includes(item.ifcClass) && isUnder(item, key));
+  return { stage, key, label, guids: elements.map((item) => item.globalId) };
+}
+
+async function selectRelationshipTile(stage, item) {
+  const scope = relationshipSelection.slice(0, 4).reverse().find(Boolean) || "";
+  const sameGroup = selectedRelationshipGroup?.stage === stage && selectedRelationshipGroup.key === item.key
+    && (stage !== 4 || selectedRelationshipGroup.scope === scope);
+  if (sameGroup) {
+    await clearSelection();
+    renderRelationships();
+    return;
+  }
+  relationshipSelection[stage] = item.key;
+  for (let next = stage + 1; next < 6; next += 1) { relationshipSelection[next] = ""; relationshipPage[next] = 0; }
+  selectedRelationshipGroup = relationshipGroupForTile(stage, item.key, item.name);
+  selectedRelationshipGroup.scope = relationshipSelection.slice(0, 4).reverse().find(Boolean) || "";
+  selectedClass = "";
+  selectedGuid = "";
+  selectedName = "";
+  selectedRequirementGroup = null;
+  isolateSelected = false;
+  selectionVersion += 1;
+  clearProperties();
+  renderChart();
+  renderFailures();
+  renderSelectedIssues();
+  renderRelationships();
+  updateSelectionControls();
+  rememberView();
+  if (!model) { setStatus(`Loading model before showing ${item.name}…`); return; }
+  await refreshVisuals();
 }
 
 function syncRelationshipToGuid(guid) {
@@ -613,16 +677,14 @@ function renderRelationships() {
       button.type = "button";
       button.title = `${item.name} · ${item.meta}`;
       button.setAttribute("aria-current", String(item.key === relationshipSelection[stage]));
+      if (stage < 5) button.setAttribute("aria-pressed", String(selectedRelationshipGroup?.stage === stage && selectedRelationshipGroup.key === item.key));
       button.append(node("span", "relationship-node__name", item.name), node("span", "relationship-node__meta", item.meta));
       button.addEventListener("click", () => {
+        if (stage < 5) { selectRelationshipTile(stage, item).catch((error) => setStatus(error.message, true)); return; }
         relationshipSelection[stage] = item.key;
-        for (let next = stage + 1; next < 6; next += 1) { relationshipSelection[next] = ""; relationshipPage[next] = 0; }
-        renderRelationships();
-        if (stage === 5) {
-          selectedClass = "";
-          renderChart();
-          selectGuid(item.key).catch((error) => setStatus(error.message, true));
-        }
+        selectedClass = "";
+        renderChart();
+        selectGuid(item.key).catch((error) => setStatus(error.message, true));
       });
       list.append(button);
     }
@@ -644,7 +706,9 @@ function renderRelationships() {
     column.append(pager);
     relationshipColumns.append(column);
   }
-  byId("relationship-count").textContent = `${scopedElements().length.toLocaleString()} elements in scope`;
+  byId("relationship-count").textContent = selectedRelationshipGroup
+    ? `${selectedRelationshipGroup.guids.length.toLocaleString()} selected elements`
+    : `${scopedElements().length.toLocaleString()} elements in scope`;
   requestAnimationFrame(drawRelationshipLines);
 }
 
@@ -677,7 +741,12 @@ async function loadRelationshipBrowser() {
     relationshipCacheScope = null;
     relationshipCacheElements = null;
   }
-  if (selectedGuid) syncRelationshipToGuid(selectedGuid);
+  if (selectedRelationshipGroup) {
+    selectedRelationshipGroup = relationshipGroupForTile(selectedRelationshipGroup.stage, selectedRelationshipGroup.key, selectedRelationshipGroup.label);
+    selectedRelationshipGroup.scope = relationshipSelection.slice(0, 4).reverse().find(Boolean) || "";
+    updateSelectionControls();
+    if (model) refreshVisuals(false).catch((error) => setStatus(error.message, true));
+  } else if (selectedGuid) syncRelationshipToGuid(selectedGuid);
   renderRelationships();
   renderRelationshipSearch();
 }
@@ -749,7 +818,7 @@ async function start() {
   byId("reset-view").disabled = false;
   updateSelectionControls();
   setStatus(`Whole building loaded · ${failureGroups.length.toLocaleString()} failed elements`);
-  if (selectedGuid || selectedClass) refreshVisuals().catch((error) => setStatus(error.message, true));
+  if (selectedGuid || selectedClass || selectedRelationshipGroup) refreshVisuals().catch((error) => setStatus(error.message, true));
 }
 
 start().catch((error) => { console.error(error); setStatus(`Viewer could not load: ${error.message}`, true); });
