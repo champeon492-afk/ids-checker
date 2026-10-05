@@ -8,6 +8,7 @@ const canvas = byId("canvas");
 const failureList = byId("failure-list");
 const failureSearch = byId("failure-search");
 const classChart = byId("class-chart");
+const selectedIssues = byId("selected-issues");
 const moreFailures = byId("more-failures");
 const inspector = byId("inspector");
 const propertiesPanel = byId("properties-panel");
@@ -23,6 +24,11 @@ let fragments;
 let selectedGuid = "";
 let selectedClass = "";
 let isolateSelected = false;
+let pickEnabled = true;
+let selectedName = "";
+let selectedRequirementGroup = null;
+let pointerStart = null;
+let pickRevision = 0;
 let visualRevision = 0;
 let appliedRevision = 0;
 let visualWork = null;
@@ -76,6 +82,7 @@ function rememberView() {
       selectedGuid,
       selectedClass,
       isolateSelected,
+      pickEnabled,
       search: failureSearch.value,
     }));
   } catch (_) { /* Private browsing may disable session storage. */ }
@@ -87,11 +94,15 @@ function restoreView() {
     const state = JSON.parse(sessionStorage.getItem(viewStorageKey) || "null");
     if (!state || typeof state !== "object") return;
     selectedClass = failureGroups.some((group) => group.ifcClass === state.selectedClass) ? state.selectedClass : "";
-    selectedGuid = failureGroups.some((group) => group.globalId === state.selectedGuid) ? state.selectedGuid : "";
+    selectedGuid = typeof state.selectedGuid === "string" && state.selectedGuid.length <= 64 ? state.selectedGuid : "";
+    selectedName = failureGroups.find((group) => group.globalId === selectedGuid)?.element || "";
     isolateSelected = !!(selectedGuid && state.isolateSelected);
+    pickEnabled = state.pickEnabled !== false;
+    updatePickControl();
     failureSearch.value = typeof state.search === "string" ? state.search : "";
     renderChart();
     renderFailures();
+    renderSelectedIssues();
     updateSelectionControls();
     if (selectedGuid) showProperties(selectedGuid, ++selectionVersion);
   } catch (_) { /* An invalid or unavailable saved view should not block the model. */ }
@@ -123,12 +134,46 @@ function renderChart() {
   }
 }
 
+function renderSelectedIssues() {
+  const group = selectedRequirementGroup || failureGroups.find((item) => item.globalId && item.globalId === selectedGuid);
+  if (!selectedGuid && !group) {
+    selectedIssues.hidden = true;
+    selectedIssues.replaceChildren();
+    return;
+  }
+  selectedIssues.hidden = false;
+  selectedIssues.replaceChildren();
+  selectedIssues.append(node("span", "ot-eyebrow", group?.globalId || selectedGuid ? "Selected model element" : "Validation requirement"));
+  selectedIssues.append(node("h3", "", selectedName || group?.element || group?.specification || "Selected element"));
+  selectedIssues.append(node("p", "selected-issues__meta", group?.checks.length
+    ? `${group.checks.length} ${group.checks.length === 1 ? "issue" : "issues"} · ${group.ifcClass || "IDS requirement"}`
+    : `No IDS errors recorded${selectedGuid ? ` · ${selectedGuid}` : ""}`));
+  if (group?.checks.length) {
+    const list = node("div", "selected-issues__list");
+    addIssueCallouts(list, group.checks);
+    selectedIssues.append(list);
+  } else {
+    selectedIssues.append(node("p", "selected-issues__empty", "This element has no recorded validation failures. Its IFC properties are available in the viewer."));
+  }
+}
+
+function updatePickControl() {
+  byId("pick-element").setAttribute("aria-pressed", String(pickEnabled));
+  byId("viewport-hint").textContent = pickEnabled
+    ? "Click an element to inspect · Drag to orbit · Scroll to zoom"
+    : "Drag to orbit · Scroll to zoom";
+  canvas.classList.toggle("picking-enabled", pickEnabled);
+}
+
 function renderFailures() {
   const query = failureSearch.value.trim().toLocaleLowerCase();
   const filtered = failureGroups.filter((group) => (!selectedClass || group.ifcClass === selectedClass) && (!query || [group.element, group.ifcClass, group.globalId, group.specification, ...group.checks.map((check) => check.reason)].join(" ").toLocaleLowerCase().includes(query)));
+  const selectedIndex = filtered.findIndex((group) => group.globalId && group.globalId === selectedGuid);
+  const displayed = filtered.slice(0, shownFailures);
+  if (selectedIndex >= shownFailures) displayed.unshift(filtered[selectedIndex]);
   failureList.replaceChildren();
   if (!filtered.length) failureList.append(node("p", "empty-note", query ? "No failures match your search." : selectedClass ? "No failures in this IFC class." : "No failed elements were reported."));
-  for (const group of filtered.slice(0, shownFailures)) {
+  for (const group of displayed) {
     const item = node("div");
     item.setAttribute("role", "listitem");
     const button = node("button", "failure-card");
@@ -172,17 +217,15 @@ function clearProperties() {
 function showRequirementIssue(group) {
   selectionVersion += 1;
   selectedGuid = "";
+  selectedName = "";
+  selectedRequirementGroup = group;
   isolateSelected = false;
   renderFailures();
+  renderSelectedIssues();
   updateSelectionControls();
   rememberView();
   refreshVisuals(false).catch((error) => setStatus(error.message, true));
-  showInspector("properties");
-  propertiesPanel.replaceChildren();
-  propertiesPanel.append(node("h3", "", group.specification || "Validation requirement"));
-  propertiesPanel.append(node("p", "subline", group.idsFile || "IDS file"));
-  addIssueCallouts(propertiesPanel, group.checks);
-  propertiesPanel.append(node("p", "empty-note", "This requirement has no matching IFC element to display in 3D."));
+  clearProperties();
   setStatus("This failed requirement has no matching model element.");
 }
 
@@ -229,7 +272,9 @@ async function showProperties(guid, version) {
     propertiesPanel.replaceChildren();
     propertiesPanel.append(node("h3", "", `${data.ifcClass} · ${data.name}`));
     propertiesPanel.append(node("p", "subline", data.globalId));
-    addIssueCallouts(propertiesPanel, issues.filter((issue) => issue.globalId === guid));
+    selectedName = data.name || selectedName;
+    renderSelectedIssues();
+    updateSelectionControls();
     propertiesPanel.append(propertyGroup("IFC attributes", data.attributes, true));
     if (data.type) propertiesPanel.append(propertyGroup("Element type", data.type));
     for (const [name, values] of Object.entries(data.propertySets || {})) propertiesPanel.append(propertyGroup(name, values, true));
@@ -252,9 +297,9 @@ async function frameBox(box) {
 function updateSelectionControls() {
   byId("isolate-selected").disabled = !selectedGuid;
   byId("isolate-selected").setAttribute("aria-pressed", String(isolateSelected && !!selectedGuid));
-  byId("clear-selection").disabled = !selectedGuid && !selectedClass;
+  byId("clear-selection").disabled = !selectedGuid && !selectedClass && !selectedRequirementGroup;
   byId("view-title").textContent = selectedGuid
-    ? (failureGroups.find((group) => group.globalId === selectedGuid)?.element || "Selected element")
+    ? (selectedName || failureGroups.find((group) => group.globalId === selectedGuid)?.element || "Selected element")
     : selectedClass ? `${selectedClass} failures` : "Building overview";
 }
 
@@ -311,6 +356,7 @@ async function applyVisualState(revision, frame) {
   fragments.core.update(true);
   if (revision !== visualRevision) return;
   if (guid && !elementIds.length) setStatus("This element has no viewable geometry. Its IFC properties are shown.");
+  else if (guid && !failureGroups.some((group) => group.globalId === guid)) setStatus("Selected element has no recorded IDS errors.");
   else if (guid && isolate) setStatus("Selected element is opaque; other elements are transparent.");
   else if (ifcClass) setStatus(`${ifcClass} failures are highlighted; other elements are transparent.`);
   else if (guid) setStatus("Selected element highlighted in lime. Building context remains visible.");
@@ -345,12 +391,15 @@ function refreshVisuals(frame = true) {
 async function selectClass(ifcClass) {
   selectedClass = selectedClass === ifcClass ? "" : ifcClass;
   selectedGuid = "";
+  selectedName = "";
+  selectedRequirementGroup = null;
   isolateSelected = false;
   selectionVersion += 1;
   clearProperties();
   shownFailures = 80;
   renderChart();
   renderFailures();
+  renderSelectedIssues();
   updateSelectionControls();
   rememberView();
   if (!model) { setStatus("Loading model before showing the selected IFC class…"); return; }
@@ -360,29 +409,82 @@ async function selectClass(ifcClass) {
 async function clearSelection() {
   selectedClass = "";
   selectedGuid = "";
+  selectedName = "";
+  selectedRequirementGroup = null;
   isolateSelected = false;
   selectionVersion += 1;
   clearProperties();
   renderChart();
   renderFailures();
+  renderSelectedIssues();
   updateSelectionControls();
   rememberView();
   await refreshVisuals();
 }
 
-async function selectGuid(guid) {
+async function selectGuid(guid, options = {}) {
+  const { fromModel = false, frame = true } = options;
+  const group = failureGroups.find((item) => item.globalId && item.globalId === guid);
+  if (fromModel && group && failureSearch.value) failureSearch.value = "";
+  if (group && selectedClass && selectedClass !== group.ifcClass) {
+    selectedClass = "";
+    renderChart();
+  }
   selectedGuid = guid;
+  selectedName = group?.element || "";
+  selectedRequirementGroup = null;
   selectionVersion += 1;
   const version = selectionVersion;
   renderFailures();
+  renderSelectedIssues();
   updateSelectionControls();
   rememberView();
   showProperties(guid, version);
+  if (fromModel && group) failureList.querySelector('.failure-card[aria-current="true"]')?.scrollIntoView({ block: "nearest" });
   if (!model) {
     setStatus("Loading model before locating the selected element…");
     return;
   }
-  await refreshVisuals();
+  await refreshVisuals(frame);
+}
+
+async function pickElement(event, renderCanvas) {
+  if (!model || !pickEnabled) return;
+  const revision = ++pickRevision;
+  const data = { camera: world.camera.three, mouse: new THREE.Vector2(event.clientX, event.clientY), dom: renderCanvas };
+  let hit;
+  if (selectedClass) {
+    const allowed = new Set(await localIdsForClass(selectedClass));
+    const hits = await model.raycastAll(data);
+    hit = hits?.find((item) => allowed.has(item.localId));
+  } else {
+    hit = await model.raycast(data);
+  }
+  if (revision !== pickRevision) return;
+  if (!hit) {
+    setStatus(selectedClass ? `Click a highlighted ${selectedClass} element to inspect it.` : "No model element was found at that point.");
+    return;
+  }
+  const [guid] = await model.getGuidsByLocalIds([hit.localId]);
+  if (revision !== pickRevision) return;
+  if (!guid) { setStatus("This model element has no IFC GlobalId to inspect."); return; }
+  await selectGuid(guid, { fromModel: true, frame: false });
+}
+
+function wireModelPicking() {
+  const renderCanvas = canvas.querySelector("canvas");
+  if (!renderCanvas) return;
+  renderCanvas.addEventListener("pointerdown", (event) => {
+    pointerStart = event.button === 0 ? { x: event.clientX, y: event.clientY, id: event.pointerId } : null;
+  }, true);
+  renderCanvas.addEventListener("pointerup", (event) => {
+    if (!pointerStart || pointerStart.id !== event.pointerId) return;
+    const moved = Math.hypot(event.clientX - pointerStart.x, event.clientY - pointerStart.y);
+    pointerStart = null;
+    if (moved > 5) return;
+    pickElement(event, renderCanvas).catch((error) => setStatus(`Could not select model element: ${error.message}`, true));
+  }, true);
+  renderCanvas.addEventListener("pointercancel", () => { pointerStart = null; }, true);
 }
 
 function makeTreeNode(item, depth = 0) {
@@ -453,6 +555,7 @@ async function loadBrowser() {
 function wireControls() {
   failureSearch.addEventListener("input", () => { shownFailures = 80; renderFailures(); rememberView(); });
   moreFailures.addEventListener("click", () => { shownFailures += 80; renderFailures(); });
+  byId("pick-element").addEventListener("click", () => { pickEnabled = !pickEnabled; updatePickControl(); rememberView(); });
   byId("isolate-selected").addEventListener("click", () => {
     if (!selectedGuid) return;
     isolateSelected = !isolateSelected;
@@ -472,6 +575,7 @@ function wireControls() {
 
 async function start() {
   wireControls();
+  updatePickControl();
   setStatus("Preparing IFC model…");
   issues = await getJson("/issues");
   buildFailureGroups();
@@ -501,6 +605,7 @@ async function start() {
   await loader.setup({ autoSetWasm: false, wasm: { path: "https://unpkg.com/web-ifc@0.0.77/", absolute: true } });
   setStatus("Converting IFC geometry for viewing…");
   model = await loader.load(bytes, false, "uploaded-building");
+  wireModelPicking();
   await frameBox(model.box);
   fragments.core.update(true);
   byId("reset-view").disabled = false;
