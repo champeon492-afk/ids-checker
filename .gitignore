@@ -5,5 +5,8 @@ __pycache__/
 *.ifc
 *.ids
 *.json
+!frontend/package.json
+!frontend/package-lock.json
 *.html
+frontend/node_modules/
 !.streamlit/config.toml

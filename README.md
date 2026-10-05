@@ -20,7 +20,7 @@ The app opens in your browser. Upload one or more `.ids` files and one `.ifc` fi
 
 - Summary: passing and failing checks across every uploaded IDS file.
 - Issues: one row per failed requirement and IFC element, including the source IDS file, `GlobalId`, and the reason reported by IfcTester.
-- 3D element viewer: select an issue row, or choose an element from the list, to rotate and zoom into its IFC shape. Elements without 3D geometry show an explanation instead.
+- Building viewer: explore the entire IFC model with That Open. Choose a failed element in the viewer to highlight it within the building and move the camera to it.
 - Downloads: JSON with full validation details, CSV of failures, and an HTML report for one IDS file or a ZIP of HTML reports for several IDS files.
 
 The preview is a readable view of the IDS rules. IfcTester performs the actual standards-based validation. A required specification with no applicable model elements is reported as a failure according to the IDS rules.
@@ -31,6 +31,10 @@ For public hosting, note that Streamlit uploads files to the server running this
 
 - [IfcTester](https://docs.ifcopenshell.org/ifctester.html) for IDS/IFC checking and reporting
 - [Streamlit](https://docs.streamlit.io/) for the browser interface
-- [Plotly](https://plotly.com/python/3d-mesh/) and IfcOpenShell geometry for the interactive 3D viewer
+- [That Open](https://docs.thatopen.com/) for the interactive whole-building IFC viewer
+
+The browser viewer uses That Open's IFC to Fragments conversion. Its first load can take time for a large IFC model and requires access to the That Open worker and Web IFC WASM files on unpkg.com. The app serves the uploaded IFC to the viewer through a temporary, token-protected localhost endpoint. The model is kept in memory and is not committed to GitHub.
+
+The bundled viewer is included in this repository, so Node.js is not needed to run the app. To change the viewer code, run `npm install` and `npm run build` in `frontend/`, then commit the updated bundle.
 
 The app does not require a database or user accounts.

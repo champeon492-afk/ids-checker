@@ -8,13 +8,8 @@ import zipfile
 
 import streamlit as st
 
+from building_viewer import show_building
 from validator import csv_bytes, issue_rows, json_bytes, parse_ids_preview, run_validations
-from viewer import element_mesh, mesh_figure, open_model
-
-
-@st.cache_resource(show_spinner=False, max_entries=2)
-def cached_model(data: bytes):
-    return open_model(data)
 
 
 st.set_page_config(page_title="IDS Model Validator", page_icon="✅", layout="wide")
@@ -91,64 +86,16 @@ cols[2].metric("Checks passed", sum(report.get("total_checks_pass", 0) for repor
 cols[3].metric("Checks failed", sum(report.get("total_checks_fail", 0) for report in reports))
 cols[4].metric("Issues listed", len(issues))
 
-tabs = st.tabs(["Issues", "By IDS file", "Downloads"])
+tabs = st.tabs(["Building viewer", "Issues", "By IDS file", "Downloads"])
 with tabs[0]:
+    st.caption("Explore the complete IFC building. Choose a failed element in the viewer to locate and highlight it while the rest of the model stays visible.")
+    show_building(ifc_data, issues, fingerprint)
+with tabs[1]:
     if issues:
-        table_col, viewer_col = st.columns([1.2, 1])
-        with table_col:
-            st.caption("Select an issue row to inspect its IFC element in 3D.")
-            selection = st.dataframe(
-                issues,
-                width="stretch",
-                height=620,
-                hide_index=True,
-                on_select="rerun",
-                selection_mode="single-row",
-                key=f"issues-{fingerprint}",
-            )
-        with viewer_col:
-            st.markdown("#### 3D element viewer")
-            selected_rows = selection.selection.rows
-            selected_issue = issues[selected_rows[0]] if selected_rows else None
-            if selected_issue and selected_issue["GlobalId"]:
-                global_id = selected_issue["GlobalId"]
-            else:
-                element_issues = {row["GlobalId"]: row for row in issues if row["GlobalId"]}
-                global_id = st.selectbox(
-                    "Choose an element",
-                    options=[""] + list(element_issues),
-                    format_func=lambda guid: (
-                        f"{element_issues[guid]['IFC class']} · {element_issues[guid]['Element'] or 'Unnamed element'} · {guid}"
-                        if guid else "Select an element"
-                    ),
-                )
-                selected_issue = element_issues.get(global_id)
-            if global_id:
-                st.write(f"**{selected_issue['IFC class']}** · {selected_issue['Element'] or 'Unnamed element'}")
-                st.code(global_id, language=None)
-                st.write(f"**Requirement:** {selected_issue['Requirement']}")
-                st.write(f"**Finding:** {selected_issue['Reason']}")
-                with st.spinner("Preparing element geometry..."):
-                    try:
-                        mesh = element_mesh(cached_model(ifc_data), global_id)
-                    except ValueError as exc:
-                        st.info(str(exc))
-                    else:
-                        st.plotly_chart(
-                            mesh_figure(mesh),
-                            width="stretch",
-                            height=520,
-                            config={"displayModeBar": True, "scrollZoom": True},
-                            key=f"mesh-{fingerprint}-{global_id}",
-                        )
-                        st.caption("Drag to rotate; scroll to zoom. The view shows this element alone, centered for inspection.")
-                        if mesh["shown_triangles"] < mesh["triangle_count"]:
-                            st.caption(f"Showing {mesh['shown_triangles']:,} of {mesh['triangle_count']:,} faces for smoother viewing.")
-            else:
-                st.info("Choose an element with a GlobalId to view its 3D shape.")
+        st.dataframe(issues, width="stretch", hide_index=True)
     else:
         st.info("No element-level issues were reported.")
-with tabs[1]:
+with tabs[2]:
     for item in results:
         report = item["report"]
         status = "Pass" if report.get("status") else "Fail"
@@ -161,7 +108,7 @@ with tabs[1]:
                 for requirement in spec.get("requirements", []):
                     mark = "✅" if requirement.get("status") else "❌"
                     st.write(f"{mark} {requirement.get('description') or requirement.get('label', 'Requirement')} — {requirement.get('total_pass', 0)} passed, {requirement.get('total_fail', 0)} failed")
-with tabs[2]:
+with tabs[3]:
     st.download_button("Download issues CSV", csv_bytes(issues), file_name="ids-validation-issues.csv", mime="text/csv")
     full_report = [{"ids_file": item["ids_file"], "report": item["report"]} for item in results]
     st.download_button("Download full JSON report", json_bytes(full_report), file_name="ids-validation-report.json", mime="application/json")

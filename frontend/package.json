@@ -1,0 +1,23 @@
+{
+  "name": "ids-checker-viewer",
+  "version": "1.0.0",
+  "description": "That Open whole-building IFC viewer for IDS Checker",
+  "scripts": {
+    "build": "esbuild ./viewer.js --bundle --minify --format=iife --target=es2022 --outfile=./viewer.bundle.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@thatopen/components": "^3.4.8",
+    "@thatopen/fragments": "^3.4.7",
+    "camera-controls": "^3.1.2",
+    "three": "^0.182.0",
+    "web-ifc": "^0.0.77"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.12"
+  }
+}
