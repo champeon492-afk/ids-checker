@@ -226,13 +226,17 @@ def _viewer_html(token: str, workspace_id: str = "") -> str:
       <div class="viewport"><div id="canvas" aria-label="Interactive 3D model"></div><div id="viewport-hint" class="viewport-hint">Click an element to inspect · Drag to orbit · Scroll to zoom</div>
         <section id="selected-issues" class="selected-issues ot-glass-card" aria-label="Selected element validation issues" hidden></section>
         <aside id="inspector" class="inspector ot-glass-card" aria-label="Element inspector" hidden>
-          <div class="inspector-head"><div class="inspector-tabs"><button id="properties-tab" type="button" aria-pressed="true">Properties</button><button id="browser-tab" type="button" aria-pressed="false">Model browser</button></div><button id="close-inspector" class="close-inspector" type="button" aria-label="Close inspector">×</button></div>
+          <div class="inspector-head"><strong>Properties</strong><button id="close-inspector" class="close-inspector" type="button" aria-label="Close inspector">×</button></div>
           <section id="properties-panel" class="inspector-content"><p class="empty-note">Select a failed element or choose one in the model browser to inspect its IFC properties.</p></section>
-          <section id="browser-panel" class="inspector-content" hidden><label class="search-field browser-search"><svg class="ot-icon"><use href="/icons.svg?token={token}#search"/></svg><input id="browser-search" type="search" placeholder="Search model elements" aria-label="Search model elements"></label><div id="browser-tree" class="browser-tree"></div></section>
         </aside>
       </div>
     </section>
   </div>
+  <section id="relationship-panel" class="relationship-panel ot-dark-card" aria-label="IFC relationships" hidden>
+    <div class="relationship-head"><div><strong>IFC relationships</strong><span id="relationship-count"></span></div><div class="relationship-actions"><label class="relationship-search"><svg class="ot-icon"><use href="/icons.svg?token={token}#search"/></svg><input id="browser-search" type="search" placeholder="Find model element" aria-label="Find model element"></label><button id="close-browser" class="view-button" type="button">Close</button></div></div>
+    <div id="relationship-search-results" class="relationship-search-results" hidden></div>
+    <div id="relationship-graph" class="relationship-graph"><svg id="relationship-lines" aria-hidden="true"></svg><div id="relationship-columns" class="relationship-columns"></div></div>
+  </section>
 </main>
 <script>window.viewerToken={json.dumps(token)};window.viewerWorkspaceId={json.dumps(workspace_id)};</script>
 <script src="/viewer.js?token={token}"></script>
@@ -257,4 +261,4 @@ def show_building(ifc_data: bytes, issues: list[dict], fingerprint: str, workspa
     token = st.session_state["viewer_token"]
     server.publish(token, ifc_data, issues, workspace_id)
     url = f"http://127.0.0.1:{server.server_port}/?token={token}"
-    components.iframe(url, height=840, scrolling=False)
+    components.iframe(url, height=1040, scrolling=False)

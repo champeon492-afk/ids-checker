@@ -12,8 +12,11 @@ const selectedIssues = byId("selected-issues");
 const moreFailures = byId("more-failures");
 const inspector = byId("inspector");
 const propertiesPanel = byId("properties-panel");
-const browserPanel = byId("browser-panel");
-const browserTree = byId("browser-tree");
+const relationshipPanel = byId("relationship-panel");
+const relationshipGraph = byId("relationship-graph");
+const relationshipColumns = byId("relationship-columns");
+const relationshipLines = byId("relationship-lines");
+const relationshipSearchResults = byId("relationship-search-results");
 const viewStorageKey = window.viewerWorkspaceId ? `ids-checker-view-${window.viewerWorkspaceId}` : "";
 let issues = [];
 let failureGroups = [];
@@ -41,7 +44,11 @@ const classLocalIds = new Map();
 let selectionVersion = 0;
 let treeNodes = null;
 let treeIndex = null;
-let treeChildren = null;
+let browserOpen = false;
+const relationshipSelection = ["", "", "", "", "", ""];
+const relationshipPage = [0, 0, 0, 0, 0, 0];
+let relationshipCacheScope = null;
+let relationshipCacheElements = null;
 
 function setStatus(message, error = false) {
   status.textContent = message;
@@ -83,6 +90,7 @@ function rememberView() {
       selectedClass,
       isolateSelected,
       pickEnabled,
+      browserOpen,
       search: failureSearch.value,
     }));
   } catch (_) { /* Private browsing may disable session storage. */ }
@@ -105,6 +113,7 @@ function restoreView() {
     renderSelectedIssues();
     updateSelectionControls();
     if (selectedGuid) showProperties(selectedGuid, ++selectionVersion);
+    if (state.browserOpen) setBrowserOpen(true);
   } catch (_) { /* An invalid or unavailable saved view should not block the model. */ }
 }
 
@@ -198,16 +207,9 @@ function renderFailures() {
   moreFailures.textContent = `Show more (${Math.min(80, filtered.length - shownFailures).toLocaleString()} of ${(filtered.length - shownFailures).toLocaleString()} remaining)`;
 }
 
-function showInspector(tab) {
+function showInspector() {
   inspector.hidden = false;
-  const properties = tab === "properties";
-  propertiesPanel.hidden = !properties;
-  browserPanel.hidden = properties;
-  byId("properties-tab").setAttribute("aria-pressed", String(properties));
-  byId("browser-tab").setAttribute("aria-pressed", String(!properties));
-  byId("show-properties").setAttribute("aria-pressed", String(properties));
-  byId("show-browser").setAttribute("aria-pressed", String(!properties));
-  if (!properties) loadBrowser().catch((error) => { browserTree.replaceChildren(node("p", "empty-note", error.message)); });
+  byId("show-properties").setAttribute("aria-pressed", "true");
 }
 
 function clearProperties() {
@@ -433,6 +435,7 @@ async function selectGuid(guid, options = {}) {
   selectedGuid = guid;
   selectedName = group?.element || "";
   selectedRequirementGroup = null;
+  if (treeIndex) syncRelationshipToGuid(guid);
   selectionVersion += 1;
   const version = selectionVersion;
   renderFailures();
@@ -487,69 +490,204 @@ function wireModelPicking() {
   renderCanvas.addEventListener("pointercancel", () => { pointerStart = null; }, true);
 }
 
-function makeTreeNode(item, depth = 0) {
-  const wrapper = node("div", "tree-node");
-  const row = node("div", "tree-row");
-  const children = treeChildren.get(item.globalId) || [];
-  const toggle = node("button", "tree-toggle", children.length ? "▸" : "·");
-  toggle.type = "button";
-  toggle.disabled = !children.length;
-  toggle.setAttribute("aria-label", `Expand ${item.name}`);
-  const label = node("button", "tree-label");
-  label.type = "button";
-  label.title = `${item.ifcClass} · ${item.name} · ${item.globalId}`;
-  label.append(node("span", "", item.name));
-  label.append(node("small", "", item.ifcClass));
-  label.addEventListener("click", () => selectGuid(item.globalId).catch((error) => setStatus(error.message, true)));
-  row.append(toggle, label);
-  wrapper.append(row);
-  if (children.length) {
-    const branch = node("div", "tree-children");
-    branch.hidden = true;
-    toggle.addEventListener("click", () => {
-      if (!branch.childElementCount) for (const child of children) branch.append(makeTreeNode(child, depth + 1));
-      branch.hidden = !branch.hidden;
-      toggle.textContent = branch.hidden ? "▸" : "▾";
-    });
-    wrapper.append(branch);
-    if (depth < 3) toggle.click();
+const spatialClasses = ["IfcProject", "IfcSite", "IfcBuilding", "IfcBuildingStorey"];
+const relationshipLabels = ["Project", "Site", "Building", "Storey", "IFC class", "Element"];
+const relationshipPageSize = 5;
+
+function isUnder(item, ancestorId) {
+  if (!ancestorId) return true;
+  let current = item;
+  const seen = new Set();
+  while (current && !seen.has(current.globalId)) {
+    if (current.globalId === ancestorId) return true;
+    seen.add(current.globalId);
+    current = treeIndex.get(current.parentId);
   }
-  return wrapper;
+  return false;
 }
 
-function renderBrowser() {
-  if (!treeNodes) return;
-  const query = byId("browser-search").value.trim().toLocaleLowerCase();
-  browserTree.replaceChildren();
-  if (query) {
-    const found = treeNodes.filter((item) => `${item.name} ${item.ifcClass} ${item.globalId}`.toLocaleLowerCase().includes(query)).slice(0, 150);
-    if (!found.length) browserTree.append(node("p", "empty-note", "No model elements match your search."));
-    for (const item of found) {
-      const row = node("button", "tree-label", `${item.ifcClass} · ${item.name}`);
-      row.type = "button";
-      row.title = item.globalId;
-      row.addEventListener("click", () => selectGuid(item.globalId).catch((error) => setStatus(error.message, true)));
-      browserTree.append(row);
+function scopedElements() {
+  const scope = relationshipSelection.slice(0, 4).reverse().find(Boolean) || "";
+  if (relationshipCacheScope === scope && relationshipCacheElements) return relationshipCacheElements;
+  const elements = treeNodes.filter((item) => !spatialClasses.includes(item.ifcClass));
+  const contained = scope ? elements.filter((item) => isUnder(item, scope)) : elements;
+  const hasContainment = elements.some((item) => item.parentId && treeIndex.has(item.parentId));
+  relationshipCacheScope = scope;
+  relationshipCacheElements = !scope || hasContainment ? contained : elements;
+  return relationshipCacheElements;
+}
+
+function relationshipCandidates(stage) {
+  if (stage < 4) {
+    const parent = relationshipSelection.slice(0, stage).reverse().find(Boolean);
+    return treeNodes.filter((item) => item.ifcClass === spatialClasses[stage] && isUnder(item, parent))
+      .map((item) => ({ key: item.globalId, name: item.name, meta: item.ifcClass }));
+  }
+  const elements = scopedElements();
+  if (stage === 4) {
+    const counts = new Map();
+    for (const item of elements) counts.set(item.ifcClass, (counts.get(item.ifcClass) || 0) + 1);
+    return [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([key, count]) => ({ key, name: key.replace(/^Ifc/, ""), meta: `${count.toLocaleString()} ${count === 1 ? "element" : "elements"}` }));
+  }
+  return elements.filter((item) => !relationshipSelection[4] || item.ifcClass === relationshipSelection[4])
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((item) => ({ key: item.globalId, name: item.name, meta: item.ifcClass }));
+}
+
+function syncRelationshipToGuid(guid) {
+  const item = treeIndex?.get(guid);
+  if (!item) return;
+  const ancestors = [];
+  const seen = new Set();
+  let current = item;
+  while (current && !seen.has(current.globalId)) {
+    ancestors.push(current);
+    seen.add(current.globalId);
+    current = treeIndex.get(current.parentId);
+  }
+  for (let stage = 0; stage < 4; stage += 1) relationshipSelection[stage] = ancestors.find((part) => part.ifcClass === spatialClasses[stage])?.globalId || "";
+  relationshipSelection[4] = item.ifcClass;
+  relationshipSelection[5] = guid;
+  for (let stage = 0; stage < 6; stage += 1) {
+    const index = relationshipCandidates(stage).findIndex((candidate) => candidate.key === relationshipSelection[stage]);
+    relationshipPage[stage] = Math.max(0, Math.floor(index / relationshipPageSize));
+  }
+  if (browserOpen) renderRelationships();
+}
+
+function drawRelationshipLines() {
+  if (!browserOpen || !treeNodes) return;
+  const graphBox = relationshipGraph.getBoundingClientRect();
+  const width = relationshipColumns.scrollWidth;
+  const height = relationshipColumns.clientHeight;
+  relationshipLines.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  relationshipLines.style.width = `${width}px`;
+  relationshipLines.style.height = `${height}px`;
+  relationshipLines.replaceChildren();
+  const columns = [...relationshipColumns.children];
+  for (let stage = 1; stage < columns.length; stage += 1) {
+    const targets = columns[stage].querySelectorAll(".relationship-node");
+    if (!targets.length) continue;
+    let parent;
+    for (let previous = stage - 1; previous >= 0; previous -= 1) {
+      parent = columns[previous].querySelector('.relationship-node[aria-current="true"]');
+      if (parent) break;
     }
-    return;
+    if (!parent) continue;
+    const source = parent.getBoundingClientRect();
+    const startX = source.right - graphBox.left + relationshipGraph.scrollLeft;
+    const startY = source.top + source.height / 2 - graphBox.top + relationshipGraph.scrollTop;
+    for (const target of targets) {
+      const box = target.getBoundingClientRect();
+      const endX = box.left - graphBox.left + relationshipGraph.scrollLeft;
+      const endY = box.top + box.height / 2 - graphBox.top + relationshipGraph.scrollTop;
+      const bend = Math.max(18, (endX - startX) * .46);
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", `M${startX},${startY} C${startX + bend},${startY} ${endX - bend},${endY} ${endX},${endY}`);
+      path.setAttribute("fill", "none");
+      path.setAttribute("stroke", target.getAttribute("aria-current") === "true" ? "#baff16" : "#9d4eb7");
+      path.setAttribute("stroke-width", target.getAttribute("aria-current") === "true" ? "2.5" : "1.2");
+      path.setAttribute("opacity", target.getAttribute("aria-current") === "true" ? ".9" : ".55");
+      relationshipLines.append(path);
+    }
   }
-  const roots = treeNodes.filter((item) => !item.parentId || !treeIndex.has(item.parentId));
-  for (const item of roots) browserTree.append(makeTreeNode(item));
 }
 
-async function loadBrowser() {
-  if (treeNodes) return;
-  browserTree.replaceChildren(node("p", "empty-note", "Reading model hierarchy…"));
-  treeNodes = await getJson("/browser");
-  treeIndex = new Map(treeNodes.map((item) => [item.globalId, item]));
-  treeChildren = new Map();
-  for (const item of treeNodes) {
-    if (!item.parentId) continue;
-    if (!treeChildren.has(item.parentId)) treeChildren.set(item.parentId, []);
-    treeChildren.get(item.parentId).push(item);
+function renderRelationships() {
+  if (!treeNodes || !browserOpen) return;
+  for (let stage = 0; stage < 6; stage += 1) {
+    const candidates = relationshipCandidates(stage);
+    if (!candidates.some((item) => item.key === relationshipSelection[stage])) relationshipSelection[stage] = stage === 5 ? "" : candidates[0]?.key || "";
   }
-  for (const children of treeChildren.values()) children.sort((a, b) => a.ifcClass.localeCompare(b.ifcClass) || a.name.localeCompare(b.name));
-  renderBrowser();
+  relationshipColumns.replaceChildren();
+  for (let stage = 0; stage < 6; stage += 1) {
+    const candidates = relationshipCandidates(stage);
+    const pages = Math.max(1, Math.ceil(candidates.length / relationshipPageSize));
+    relationshipPage[stage] = Math.min(relationshipPage[stage], pages - 1);
+    const column = node("section", "relationship-column");
+    column.append(node("h3", "relationship-column__head", relationshipLabels[stage]));
+    const list = node("div", "relationship-column__nodes");
+    for (const item of candidates.slice(relationshipPage[stage] * relationshipPageSize, (relationshipPage[stage] + 1) * relationshipPageSize)) {
+      const button = node("button", "relationship-node");
+      button.type = "button";
+      button.title = `${item.name} · ${item.meta}`;
+      button.setAttribute("aria-current", String(item.key === relationshipSelection[stage]));
+      button.append(node("span", "relationship-node__name", item.name), node("span", "relationship-node__meta", item.meta));
+      button.addEventListener("click", () => {
+        relationshipSelection[stage] = item.key;
+        for (let next = stage + 1; next < 6; next += 1) { relationshipSelection[next] = ""; relationshipPage[next] = 0; }
+        renderRelationships();
+        if (stage === 5) {
+          selectedClass = "";
+          renderChart();
+          selectGuid(item.key).catch((error) => setStatus(error.message, true));
+        }
+      });
+      list.append(button);
+    }
+    if (!candidates.length) list.append(node("p", "relationship-empty", "No items"));
+    column.append(list);
+    const pager = node("div", "relationship-column__pager");
+    pager.append(node("span", "", `${candidates.length ? relationshipPage[stage] + 1 : 0}/${Math.ceil(candidates.length / relationshipPageSize)}`));
+    const back = node("button", "", "‹");
+    back.type = "button";
+    back.disabled = relationshipPage[stage] === 0;
+    back.setAttribute("aria-label", `Previous ${relationshipLabels[stage]} page`);
+    back.addEventListener("click", () => { relationshipPage[stage] -= 1; renderRelationships(); });
+    const forward = node("button", "", "›");
+    forward.type = "button";
+    forward.disabled = relationshipPage[stage] >= pages - 1;
+    forward.setAttribute("aria-label", `Next ${relationshipLabels[stage]} page`);
+    forward.addEventListener("click", () => { relationshipPage[stage] += 1; renderRelationships(); });
+    pager.append(back, forward);
+    column.append(pager);
+    relationshipColumns.append(column);
+  }
+  byId("relationship-count").textContent = `${scopedElements().length.toLocaleString()} elements in scope`;
+  requestAnimationFrame(drawRelationshipLines);
+}
+
+function renderRelationshipSearch() {
+  const query = byId("browser-search").value.trim().toLocaleLowerCase();
+  relationshipSearchResults.replaceChildren();
+  relationshipSearchResults.hidden = !query || !treeNodes;
+  if (!query || !treeNodes) return;
+  const matches = treeNodes.filter((item) => !spatialClasses.includes(item.ifcClass) && `${item.name} ${item.ifcClass} ${item.globalId}`.toLocaleLowerCase().includes(query)).slice(0, 30);
+  if (!matches.length) relationshipSearchResults.append(node("p", "empty-note", "No model elements match your search."));
+  for (const item of matches) {
+    const button = node("button", "", `${item.name} · ${item.ifcClass}`);
+    button.type = "button";
+    button.append(node("small", "", item.globalId));
+    button.addEventListener("click", () => {
+      byId("browser-search").value = "";
+      renderRelationshipSearch();
+      syncRelationshipToGuid(item.globalId);
+      selectGuid(item.globalId).catch((error) => setStatus(error.message, true));
+    });
+    relationshipSearchResults.append(button);
+  }
+}
+
+async function loadRelationshipBrowser() {
+  if (!treeNodes) {
+    relationshipColumns.replaceChildren(node("p", "empty-note", "Reading IFC relationships…"));
+    treeNodes = await getJson("/browser");
+    treeIndex = new Map(treeNodes.map((item) => [item.globalId, item]));
+    relationshipCacheScope = null;
+    relationshipCacheElements = null;
+  }
+  if (selectedGuid) syncRelationshipToGuid(selectedGuid);
+  renderRelationships();
+  renderRelationshipSearch();
+}
+
+function setBrowserOpen(open) {
+  browserOpen = open;
+  relationshipPanel.hidden = !open;
+  byId("show-browser").setAttribute("aria-pressed", String(open));
+  rememberView();
+  if (open) loadRelationshipBrowser().catch((error) => { relationshipColumns.replaceChildren(node("p", "empty-note", error.message)); });
 }
 
 function wireControls() {
@@ -565,12 +703,12 @@ function wireControls() {
   });
   byId("clear-selection").addEventListener("click", () => clearSelection().catch((error) => setStatus(error.message, true)));
   byId("reset-view").addEventListener("click", () => frameBox(model.box));
-  byId("show-properties").addEventListener("click", () => showInspector("properties"));
-  byId("show-browser").addEventListener("click", () => showInspector("browser"));
-  byId("properties-tab").addEventListener("click", () => showInspector("properties"));
-  byId("browser-tab").addEventListener("click", () => showInspector("browser"));
-  byId("close-inspector").addEventListener("click", () => { inspector.hidden = true; byId("show-properties").setAttribute("aria-pressed", "false"); byId("show-browser").setAttribute("aria-pressed", "false"); });
-  byId("browser-search").addEventListener("input", renderBrowser);
+  byId("show-properties").addEventListener("click", showInspector);
+  byId("show-browser").addEventListener("click", () => setBrowserOpen(!browserOpen));
+  byId("close-inspector").addEventListener("click", () => { inspector.hidden = true; byId("show-properties").setAttribute("aria-pressed", "false"); });
+  byId("close-browser").addEventListener("click", () => setBrowserOpen(false));
+  byId("browser-search").addEventListener("input", renderRelationshipSearch);
+  window.addEventListener("resize", () => requestAnimationFrame(drawRelationshipLines));
 }
 
 async function start() {
