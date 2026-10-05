@@ -9,6 +9,12 @@ import zipfile
 import streamlit as st
 
 from validator import csv_bytes, issue_rows, json_bytes, parse_ids_preview, run_validations
+from viewer import element_mesh, mesh_figure, open_model
+
+
+@st.cache_resource(show_spinner=False, max_entries=2)
+def cached_model(data: bytes):
+    return open_model(data)
 
 
 st.set_page_config(page_title="IDS Model Validator", page_icon="✅", layout="wide")
@@ -88,7 +94,58 @@ cols[4].metric("Issues listed", len(issues))
 tabs = st.tabs(["Issues", "By IDS file", "Downloads"])
 with tabs[0]:
     if issues:
-        st.dataframe(issues, width="stretch", hide_index=True)
+        table_col, viewer_col = st.columns([1.2, 1])
+        with table_col:
+            st.caption("Select an issue row to inspect its IFC element in 3D.")
+            selection = st.dataframe(
+                issues,
+                width="stretch",
+                height=620,
+                hide_index=True,
+                on_select="rerun",
+                selection_mode="single-row",
+                key=f"issues-{fingerprint}",
+            )
+        with viewer_col:
+            st.markdown("#### 3D element viewer")
+            selected_rows = selection.selection.rows
+            selected_issue = issues[selected_rows[0]] if selected_rows else None
+            if selected_issue and selected_issue["GlobalId"]:
+                global_id = selected_issue["GlobalId"]
+            else:
+                element_issues = {row["GlobalId"]: row for row in issues if row["GlobalId"]}
+                global_id = st.selectbox(
+                    "Choose an element",
+                    options=[""] + list(element_issues),
+                    format_func=lambda guid: (
+                        f"{element_issues[guid]['IFC class']} · {element_issues[guid]['Element'] or 'Unnamed element'} · {guid}"
+                        if guid else "Select an element"
+                    ),
+                )
+                selected_issue = element_issues.get(global_id)
+            if global_id:
+                st.write(f"**{selected_issue['IFC class']}** · {selected_issue['Element'] or 'Unnamed element'}")
+                st.code(global_id, language=None)
+                st.write(f"**Requirement:** {selected_issue['Requirement']}")
+                st.write(f"**Finding:** {selected_issue['Reason']}")
+                with st.spinner("Preparing element geometry..."):
+                    try:
+                        mesh = element_mesh(cached_model(ifc_data), global_id)
+                    except ValueError as exc:
+                        st.info(str(exc))
+                    else:
+                        st.plotly_chart(
+                            mesh_figure(mesh),
+                            width="stretch",
+                            height=520,
+                            config={"displayModeBar": True, "scrollZoom": True},
+                            key=f"mesh-{fingerprint}-{global_id}",
+                        )
+                        st.caption("Drag to rotate; scroll to zoom. The view shows this element alone, centered for inspection.")
+                        if mesh["shown_triangles"] < mesh["triangle_count"]:
+                            st.caption(f"Showing {mesh['shown_triangles']:,} of {mesh['triangle_count']:,} faces for smoother viewing.")
+            else:
+                st.info("Choose an element with a GlobalId to view its 3D shape.")
     else:
         st.info("No element-level issues were reported.")
 with tabs[1]:

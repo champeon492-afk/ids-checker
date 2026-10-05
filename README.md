@@ -20,6 +20,7 @@ The app opens in your browser. Upload one or more `.ids` files and one `.ifc` fi
 
 - Summary: passing and failing checks across every uploaded IDS file.
 - Issues: one row per failed requirement and IFC element, including the source IDS file, `GlobalId`, and the reason reported by IfcTester.
+- 3D element viewer: select an issue row, or choose an element from the list, to rotate and zoom into its IFC shape. Elements without 3D geometry show an explanation instead.
 - Downloads: JSON with full validation details, CSV of failures, and an HTML report for one IDS file or a ZIP of HTML reports for several IDS files.
 
 The preview is a readable view of the IDS rules. IfcTester performs the actual standards-based validation. A required specification with no applicable model elements is reported as a failure according to the IDS rules.
@@ -30,5 +31,6 @@ For public hosting, note that Streamlit uploads files to the server running this
 
 - [IfcTester](https://docs.ifcopenshell.org/ifctester.html) for IDS/IFC checking and reporting
 - [Streamlit](https://docs.streamlit.io/) for the browser interface
+- [Plotly](https://plotly.com/python/3d-mesh/) and IfcOpenShell geometry for the interactive 3D viewer
 
 The app does not require a database or user accounts.
