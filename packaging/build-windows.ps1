@@ -24,7 +24,7 @@ $pth = Join-Path $pythonDir "python312._pth"
 @("python312.zip", ".", "Lib\site-packages", "..\app", "import site") | Set-Content -LiteralPath $pth -Encoding ascii
 $sitePackages = Join-Path $pythonDir "Lib\site-packages"
 New-Item -ItemType Directory -Path $sitePackages -Force | Out-Null
-& python -m pip install --disable-pip-version-check --only-binary=:all: --target $sitePackages -r (Join-Path $root "requirements.txt")
+& python -m pip install --disable-pip-version-check --target $sitePackages -r (Join-Path $root "requirements.txt")
 if ($LASTEXITCODE -ne 0) { throw "Could not package the Python dependencies." }
 
 Copy-Item -Path (Join-Path $root "*.py") -Destination $appDir
