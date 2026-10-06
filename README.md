@@ -81,7 +81,9 @@ An element can appear in **both** element lists when it passes one IDS requireme
 
 - Load all IFCs into one That Open scene using their IFC coordinates; drag to orbit and scroll to zoom.
 - Open **Models** to select the active IFC's results and independently show or hide each IFC in 3D. Element selection, properties, results, and relationships remain tied to the correct model even if two IFCs reuse a `GlobalId`.
-- **Soft outline** adds thin black edge lines around a selected object and gentler ambient/directional lighting. Turn it off for the original technical presentation. It changes appearance only; IFC geometry is not rounded or modified.
+- **Soft outline** continuously draws a black outer silhouette around the visible federation, with thin black edges on the selected object and gentler ambient/directional lighting. It works even when nothing is selected. Turn it off for the original technical presentation. It changes appearance only; IFC geometry is not rounded or modified.
+- Select **Walk mode** to enter the building at a detected horizontal surface. Use **WASD** to move and **Space** to jump; gravity and collision probes keep the camera on floors and slabs and block solid obstacles. Select **Exit walk** to return to orbit. Walk behavior depends on the IFC geometry and available floor surfaces.
+- In the embedded viewer, click the model and drag to look around while walking. Select **Open full viewer** to use the same model and results in a separate browser tab; compatible browsers also allow free mouse look there. Press **Esc** to release a captured mouse.
 - Search the failed and passed element lists. The lists initially show a limited number of cards; **Show more** reveals additional results.
 - Click a class bar to filter failures by IFC class and highlight the corresponding model elements. Class bar values count validation issues.
 - Select an element card, click a model element with **Select in 3D** enabled, or choose it in **Model browser**. The selection is highlighted in lime and its recorded results appear in the viewer.

@@ -1,3 +1,9 @@
+## IDS Checker 2.1.0
+
+- Soft outline now stays visible around the entire visible model federation, including when no element is selected. Selected elements keep their lime highlight and thin black edges.
+- Added Walk mode with WASD movement, mouse look, gravity, wall collision, floor contact, and Space to jump. Exit walk returns to orbit.
+- Added an **Open full viewer** link. The embedded viewer supports drag to look; browsers that allow pointer lock support free mouse look in the full viewer.
+
 ## IDS Checker 2.0.2
 
 - Fixed selected IFC objects sometimes appearing as solid black surfaces when **Soft outline** was enabled. The viewer now draws thin black edge lines while retaining each object's original surface color.

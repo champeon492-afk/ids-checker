@@ -3,6 +3,10 @@ import * as THREE from "three";
 import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
 import { LineMaterial } from "three/addons/lines/LineMaterial.js";
+import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+import { OutlinePass } from "three/addons/postprocessing/OutlinePass.js";
+import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 
 const token = encodeURIComponent(window.viewerToken);
 const byId = (id) => document.getElementById(id);
@@ -42,6 +46,22 @@ let softStyle = true;
 let sceneLights = [];
 let outlineOverlay;
 let outlineRevision = 0;
+let composer;
+let scenePass;
+let silhouettePass;
+let walkMode = false;
+let walkLocked = false;
+let walkFocused = false;
+let walkDragging = false;
+let walkPointerLockDenied = false;
+let walkKeys = new Set();
+let walkFrame = 0;
+let walkLastTime = 0;
+let walkVerticalSpeed = 0;
+let walkGrounded = false;
+let walkYaw = 0;
+let walkPitch = 0;
+let walkProbeCamera;
 const otherGhosted = new Set();
 let world;
 let fragments;
@@ -627,17 +647,240 @@ async function pickElement(event, renderCanvas) {
 function wireModelPicking() {
   const renderCanvas = canvas.querySelector("canvas");
   if (!renderCanvas) return;
+  renderCanvas.tabIndex = 0;
+  renderCanvas.addEventListener("blur", () => { if (!walkLocked) { walkFocused = false; walkKeys.clear(); } });
+  renderCanvas.addEventListener("click", () => {
+    if (!walkMode) return;
+    walkFocused = true;
+    renderCanvas.focus();
+    const useDragLook = () => {
+      walkPointerLockDenied = true;
+      byId("walk-hint").textContent = "Drag to look · WASD move · Space jump · Full viewer supports free mouse look in compatible browsers";
+      setStatus("Walk mode is active. Drag to look; full mouse look is available in browsers that support pointer lock.");
+    };
+    if (!walkLocked && !walkPointerLockDenied) {
+      if (typeof renderCanvas.requestPointerLock === "function") renderCanvas.requestPointerLock().catch(useDragLook);
+      else useDragLook();
+    }
+  });
   renderCanvas.addEventListener("pointerdown", (event) => {
+    if (walkMode) {
+      walkDragging = event.button === 0;
+      if (walkDragging) renderCanvas.setPointerCapture(event.pointerId);
+      return;
+    }
     pointerStart = event.button === 0 ? { x: event.clientX, y: event.clientY, id: event.pointerId } : null;
   }, true);
   renderCanvas.addEventListener("pointerup", (event) => {
+    if (walkMode) { walkDragging = false; return; }
     if (!pointerStart || pointerStart.id !== event.pointerId) return;
     const moved = Math.hypot(event.clientX - pointerStart.x, event.clientY - pointerStart.y);
     pointerStart = null;
     if (moved > 5) return;
     pickElement(event, renderCanvas).catch((error) => setStatus(`Could not select model element: ${error.message}`, true));
   }, true);
-  renderCanvas.addEventListener("pointercancel", () => { pointerStart = null; }, true);
+  renderCanvas.addEventListener("pointercancel", () => { pointerStart = null; walkDragging = false; }, true);
+  renderCanvas.addEventListener("pointermove", (event) => {
+    if (!walkMode || walkLocked || !walkDragging) return;
+    walkYaw -= event.movementX * 0.0022;
+    walkPitch = THREE.MathUtils.clamp(walkPitch - event.movementY * 0.0022, -1.48, 1.48);
+    updateWalkCamera();
+  });
+}
+
+const WALK_EYE_HEIGHT = 1.65;
+const WALK_RADIUS = 0.28;
+const WALK_STEP_HEIGHT = 0.32;
+const WALK_SPEED = 3.2;
+const WALK_GRAVITY = 9.81;
+const WALK_JUMP_SPEED = 4.5;
+const WALK_DOWN = new THREE.Vector3(0, -1, 0);
+const WALK_FORWARD = new THREE.Vector3();
+
+async function walkRay(origin, direction, maxDistance, predicate = () => true) {
+  const renderCanvas = canvas.querySelector("canvas");
+  if (!renderCanvas) return null;
+  const rect = renderCanvas.getBoundingClientRect();
+  walkProbeCamera.position.copy(origin);
+  walkProbeCamera.quaternion.setFromUnitVectors(WALK_FORWARD.set(0, 0, -1), direction);
+  walkProbeCamera.far = Math.max(maxDistance + 1, 2);
+  walkProbeCamera.updateProjectionMatrix();
+  const data = { camera: walkProbeCamera, mouse: new THREE.Vector2(rect.left + rect.width / 2, rect.top + rect.height / 2), dom: renderCanvas };
+  let nearest = null;
+  for (const [checkId, candidate] of modelById) {
+    if (modelVisible.get(checkId) === false) continue;
+    const hits = await candidate.raycastAll(data);
+    for (const hit of hits || []) {
+      const distance = origin.distanceTo(hit.point);
+      if (distance > 0.025 && distance <= maxDistance && (!nearest || distance < nearest.distance) && predicate(hit)) nearest = { ...hit, distance };
+    }
+  }
+  return nearest;
+}
+
+function updateWalkCamera() {
+  const camera = world.camera.three;
+  camera.rotation.order = "YXZ";
+  camera.rotation.set(walkPitch, walkYaw, 0);
+  camera.updateMatrixWorld();
+  fragments.core.update(true);
+}
+
+async function walkMoveAxis(delta) {
+  if (Math.abs(delta.x) + Math.abs(delta.z) < 0.0001) return;
+  const camera = world.camera.three;
+  const distance = delta.length();
+  const direction = delta.clone().normalize();
+  for (const offset of [0, -0.75, -1.25]) {
+    const hit = await walkRay(camera.position.clone().add(new THREE.Vector3(0, offset, 0)), direction, distance + WALK_RADIUS);
+    if (!walkMode) return;
+    if (hit) return;
+  }
+  camera.position.add(delta);
+}
+
+async function walkTick(now) {
+  if (!walkMode) return;
+  const dt = Math.min(Math.max((now - walkLastTime) / 1000, 0), 0.05);
+  walkLastTime = now;
+  try {
+    if (walkLocked || walkFocused) {
+      const forward = Number(walkKeys.has("KeyW")) - Number(walkKeys.has("KeyS"));
+      const strafe = Number(walkKeys.has("KeyD")) - Number(walkKeys.has("KeyA"));
+      if (forward || strafe) {
+        const magnitude = Math.hypot(forward, strafe);
+        const step = WALK_SPEED * dt / magnitude;
+        const dx = (Math.sin(walkYaw) * -forward + Math.cos(walkYaw) * strafe) * step;
+        const dz = (Math.cos(walkYaw) * -forward - Math.sin(walkYaw) * strafe) * step;
+        await walkMoveAxis(new THREE.Vector3(dx, 0, 0));
+        if (!walkMode) return;
+        await walkMoveAxis(new THREE.Vector3(0, 0, dz));
+      }
+    }
+    if (!walkMode) return;
+    const camera = world.camera.three;
+    const previousY = camera.position.y;
+    walkVerticalSpeed = Math.max(-18, walkVerticalSpeed - WALK_GRAVITY * dt);
+    camera.position.y += walkVerticalSpeed * dt;
+    const floor = await walkRay(camera.position.clone().add(new THREE.Vector3(0, WALK_STEP_HEIGHT, 0)), WALK_DOWN, WALK_EYE_HEIGHT + WALK_STEP_HEIGHT + 1.2, (hit) => hit.normal?.y > 0.55);
+    if (!walkMode) return;
+    if (floor) {
+      const standingY = floor.point.y + WALK_EYE_HEIGHT;
+      if (walkVerticalSpeed <= 0 && camera.position.y <= standingY + 0.04 && standingY - previousY <= WALK_STEP_HEIGHT) {
+        camera.position.y = standingY;
+        walkVerticalSpeed = 0;
+        walkGrounded = true;
+      } else walkGrounded = false;
+    } else walkGrounded = false;
+    if (camera.position.y < federationBox().min.y - 5) {
+      setStatus("No floor below this point. Leaving Walk mode to keep the model in view.");
+      stopWalk();
+      await frameBox(federationBox());
+      return;
+    }
+    updateWalkCamera();
+  } catch (error) {
+    setStatus(`Walk mode stopped: ${error.message}`, true);
+    stopWalk();
+    return;
+  }
+  walkFrame = requestAnimationFrame(walkTick);
+}
+
+async function startWalk() {
+  if (!modelById.size) return;
+  await world.camera.projection.set("Perspective");
+  const target = world.camera.controls.getTarget(new THREE.Vector3());
+  const box = federationBox();
+  const castOrigin = new THREE.Vector3(target.x, box.max.y + 2, target.z);
+  let floor = await walkRay(castOrigin, WALK_DOWN, box.getSize(new THREE.Vector3()).y + 5, (hit) => hit.normal?.y > 0.55);
+  if (!floor) {
+    // A federation box may include distant outliers, leaving its center outside the building.
+    for (const [checkId, candidate] of modelById) {
+      if (modelVisible.get(checkId) === false) continue;
+      const categories = await candidate.getItemsOfCategories([/^IFCSLAB$/i, /^IFCSTAIR$/i, /^IFCSTAIRFLIGHT$/i, /^IFCRAMP$/i, /^IFCCOVERING$/i]);
+      const ids = Object.values(categories).flat();
+      for (const id of ids.slice(0, 16)) {
+        const slabBox = await candidate.getMergedBox([id]);
+        if (slabBox.isEmpty()) continue;
+        const origin = slabBox.getCenter(new THREE.Vector3()).setY(slabBox.max.y + 0.8);
+        floor = await walkRay(origin, WALK_DOWN, 2, (hit) => hit.normal?.y > 0.55);
+        if (floor) break;
+      }
+      if (floor) break;
+    }
+  }
+  if (!floor) { setStatus("No walkable surface was found beneath the view center. Orbit to a floor and try again.", true); return; }
+  const camera = world.camera.three;
+  const look = camera.getWorldDirection(new THREE.Vector3());
+  walkYaw = Math.atan2(-look.x, -look.z);
+  walkPitch = Math.asin(THREE.MathUtils.clamp(look.y, -0.95, 0.95));
+  camera.position.set(floor.point.x, floor.point.y + WALK_EYE_HEIGHT, floor.point.z);
+  world.camera.enabled = false;
+  walkMode = true;
+  walkFocused = false;
+  walkPointerLockDenied = false;
+  walkGrounded = true;
+  walkVerticalSpeed = 0;
+  walkLastTime = performance.now();
+  byId("walk-mode").setAttribute("aria-pressed", "true");
+  byId("walk-mode").textContent = "Exit walk";
+  byId("walk-hint").hidden = false;
+  byId("walk-reticle").hidden = false;
+  byId("viewport-hint").hidden = true;
+  updateWalkCamera();
+  walkFrame = requestAnimationFrame(walkTick);
+  const renderCanvas = canvas.querySelector("canvas");
+  setStatus("Walk mode: click the model for mouse look, WASD movement and Space to jump.");
+}
+
+function stopWalk() {
+  if (!walkMode) return;
+  walkMode = false;
+  walkLocked = false;
+  walkFocused = false;
+  walkDragging = false;
+  walkKeys.clear();
+  cancelAnimationFrame(walkFrame);
+  if (document.pointerLockElement) document.exitPointerLock();
+  const camera = world.camera.three;
+  const forward = camera.getWorldDirection(new THREE.Vector3());
+  const target = camera.position.clone().addScaledVector(forward, 4);
+  world.camera.enabled = true;
+  world.camera.controls.setLookAt(camera.position.x, camera.position.y, camera.position.z, target.x, target.y, target.z, false);
+  byId("walk-mode").setAttribute("aria-pressed", "false");
+  byId("walk-mode").textContent = "Walk mode";
+  byId("walk-hint").hidden = true;
+  byId("walk-hint").textContent = "Click the model to look around · WASD move · Space jump · Esc release mouse";
+  byId("walk-reticle").hidden = true;
+  byId("viewport-hint").hidden = false;
+  fragments.core.update(true);
+}
+
+function wireWalkControls() {
+  byId("walk-mode").addEventListener("click", () => {
+    if (walkMode) stopWalk();
+    else startWalk().catch((error) => setStatus(`Could not start Walk mode: ${error.message}`, true));
+  });
+  document.addEventListener("pointerlockchange", () => {
+    walkLocked = walkMode && document.pointerLockElement === canvas.querySelector("canvas");
+    if (walkLocked) walkFocused = true;
+    else if (walkMode && !walkPointerLockDenied) { walkFocused = false; walkKeys.clear(); }
+  });
+  document.addEventListener("mousemove", (event) => {
+    if (!walkMode || !walkLocked) return;
+    walkYaw -= event.movementX * 0.0022;
+    walkPitch = THREE.MathUtils.clamp(walkPitch - event.movementY * 0.0022, -1.48, 1.48);
+    updateWalkCamera();
+  });
+  window.addEventListener("keydown", (event) => {
+    if (!walkMode || !(walkLocked || walkFocused) || event.target instanceof HTMLInputElement) return;
+    if (["KeyW", "KeyA", "KeyS", "KeyD", "Space"].includes(event.code)) event.preventDefault();
+    if (event.code === "Space" && walkGrounded && !event.repeat) { walkVerticalSpeed = WALK_JUMP_SPEED; walkGrounded = false; }
+    walkKeys.add(event.code);
+  });
+  window.addEventListener("keyup", (event) => walkKeys.delete(event.code));
+  window.addEventListener("blur", () => walkKeys.clear());
 }
 
 const spatialClasses = ["IfcProject", "IfcSite", "IfcBuilding", "IfcBuildingStorey"];
@@ -953,6 +1196,7 @@ async function applyModelVisibility() {
     candidate.object.visible = visible;
     await candidate.setVisible(undefined, visible);
   }
+  if (silhouettePass) silhouettePass.selectedObjects = [...modelById].filter(([id]) => modelVisible.get(id) !== false).map(([, candidate]) => candidate.object);
   if (fragments) fragments.core.update(true);
   renderModels();
 }
@@ -1017,7 +1261,38 @@ function applyStyle() {
   for (const light of sceneLights) light.visible = softStyle;
   if (!softStyle) clearOutline();
   else if (selectedGuid) localIdForGuid(selectedGuid).then(updateOutline).catch(() => {});
+  if (silhouettePass) silhouettePass.enabled = softStyle;
   fragments?.core.update(true);
+}
+
+function setupSilhouette() {
+  const size = world.renderer.getSize();
+  composer = new EffectComposer(world.renderer.three);
+  scenePass = new RenderPass(world.scene.three, world.camera.three);
+  silhouettePass = new OutlinePass(size, world.scene.three, world.camera.three, []);
+  silhouettePass.visibleEdgeColor.set(0x050505);
+  silhouettePass.hiddenEdgeColor.set(0x050505);
+  silhouettePass.edgeStrength = 4;
+  silhouettePass.edgeThickness = 1.6;
+  silhouettePass.edgeGlow = 0;
+  // OutlinePass normally adds bright colors. Normal blending lets a black edge darken the image.
+  silhouettePass.overlayMaterial.blending = THREE.NormalBlending;
+  composer.addPass(scenePass);
+  composer.addPass(silhouettePass);
+  composer.addPass(new OutputPass());
+  world.renderer.onResize.add((nextSize) => composer.setSize(nextSize.x, nextSize.y));
+  const originalUpdate = world.renderer.update.bind(world.renderer);
+  world.renderer.update = (delta) => {
+    if (!softStyle || !silhouettePass.selectedObjects.length) return originalUpdate(delta);
+    if (!world.renderer.enabled || !world.renderer.currentWorld) return;
+    if (world.renderer.mode === OBC.RendererMode.MANUAL && !world.renderer.needsUpdate) return;
+    world.renderer.needsUpdate = false;
+    scenePass.camera = world.camera.three;
+    silhouettePass.renderCamera = world.camera.three;
+    world.renderer.onBeforeUpdate.trigger(world.renderer);
+    composer.render(delta);
+    world.renderer.onAfterUpdate.trigger(world.renderer);
+  };
 }
 
 async function activateCheck(checkId) {
@@ -1064,6 +1339,7 @@ async function activateCheck(checkId) {
 
 async function start() {
   wireControls();
+  wireWalkControls();
   updatePickControl();
   setStatus("Preparing federated IFC models…");
   checks = await getJson("/checks");
@@ -1083,6 +1359,8 @@ async function start() {
   sceneLights = [hemisphere, keyLight, fillLight];
   for (const light of sceneLights) world.scene.three.add(light);
   components.init();
+  setupSilhouette();
+  walkProbeCamera = new THREE.PerspectiveCamera(12, Math.max(canvas.clientWidth / Math.max(canvas.clientHeight, 1), 1), 0.01, 100);
   fragments = components.get(OBC.FragmentsManager);
   const workerUrl = await OBC.FragmentsManager.getWorker();
   fragments.init(workerUrl);
@@ -1103,6 +1381,7 @@ async function start() {
     modelById.set(check.id, loaded);
     modelVisible.set(check.id, true);
   }
+  silhouettePass.selectedObjects = [...modelById.values()].map((candidate) => candidate.object);
   applyStyle();
   const savedState = viewStorageKey ? JSON.parse(sessionStorage.getItem(viewStorageKey) || "null") : null;
   await activateCheck(checks.some((check) => check.id === savedState?.activeCheckId) ? savedState.activeCheckId : checks[0].id);
