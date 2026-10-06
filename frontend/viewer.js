@@ -86,9 +86,13 @@ function buildFailureGroups() {
     groups.get(key).checks.push(issue);
   });
   failureGroups = [...groups.values()];
-  byId("failure-count").textContent = failureGroups.length.toLocaleString();
+  byId("failure-count").textContent = failedElementCount().toLocaleString();
   renderChart();
   renderFailures();
+}
+
+function failedElementCount() {
+  return failureGroups.filter((group) => group.globalId).length;
 }
 
 function buildPassGroups() {
@@ -471,7 +475,7 @@ async function applyVisualState(revision, frame) {
   else if (guid && isolate) setStatus("Selected element is opaque; other elements are transparent.");
   else if (ifcClass) setStatus(`${ifcClass} failures are highlighted${isolate ? "; other elements are transparent" : ""}.`);
   else if (guid) setStatus("Selected element highlighted in lime. Building context remains visible.");
-  else setStatus(`Whole building loaded · ${failureGroups.length.toLocaleString()} failed elements`);
+  else setStatus(`Whole building loaded · ${failedElementCount().toLocaleString()} failed elements`);
 }
 
 function refreshVisuals(frame = true) {
@@ -915,7 +919,7 @@ async function start() {
   fragments.core.update(true);
   byId("reset-view").disabled = false;
   updateSelectionControls();
-  setStatus(`Whole building loaded · ${failureGroups.length.toLocaleString()} failed elements`);
+  setStatus(`Whole building loaded · ${failedElementCount().toLocaleString()} failed elements`);
   if (selectedGuid || selectedClass || selectedRelationshipGroup) refreshVisuals().catch((error) => setStatus(error.message, true));
 }
 

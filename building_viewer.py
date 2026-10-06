@@ -221,13 +221,13 @@ def _viewer_html(token: str, workspace_id: str = "") -> str:
 </head><body>
 <main class="workspace">
   <header class="workspace-head">
-    <div class="brand"><img class="brand-logo" src="/logo.png?token={token}" alt="IDS Checker logo"><div><span class="ot-eyebrow">Orion Twin interface</span><strong>IDS CHECKER</strong></div></div>
+    <div class="brand"><img class="brand-logo" src="/logo.png?token={token}" alt="IDS Checker logo"><strong>IDS Model Viewer</strong></div>
     <div class="head-right"><span class="ot-pill ot-pill--dark">IFC model workspace</span><span id="status" role="status">Starting viewer…</span></div>
   </header>
   <div class="workspace-main">
     <aside class="failures ot-dark-card" aria-label="Validation results">
-      <div class="panel-head"><span class="ot-eyebrow">Validation results</span><h2>Model elements</h2><p>Choose an element to inspect its failed and passed IDS checks.</p></div>
-      <div class="result-tabs" role="tablist" aria-label="Validation result type"><button id="show-failures" role="tab" type="button" aria-selected="true" aria-controls="failed-pane">Failed <span id="failure-count" class="count-pill">0</span></button><button id="show-passes" role="tab" type="button" aria-selected="false" aria-controls="passed-pane">Passed <span id="pass-count" class="count-pill">0</span></button></div>
+      <div class="panel-head"><span class="ot-eyebrow">Validation results</span><h2>Model elements</h2><p>Counts show distinct IFC elements. An element may appear in both lists if different checks pass and fail.</p></div>
+      <div class="result-tabs" role="tablist" aria-label="Validation result type"><button id="show-failures" role="tab" type="button" aria-selected="true" aria-controls="failed-pane"><span>Failed<br>elements</span><span id="failure-count" class="count-pill">0</span></button><button id="show-passes" role="tab" type="button" aria-selected="false" aria-controls="passed-pane"><span>Passed<br>elements</span><span id="pass-count" class="count-pill">0</span></button></div>
       <section id="failed-pane" class="results-pane" role="tabpanel" aria-label="Failed elements">
       <section class="chart-panel" aria-label="Errors by IFC class"><div class="chart-heading"><strong>Errors by IFC class</strong><span>Validation issues</span></div><div id="class-chart" class="class-chart"></div></section>
       <label class="search-field"><svg class="ot-icon"><use href="/icons.svg?token={token}#search"/></svg><input id="failure-search" type="search" placeholder="Search failures" aria-label="Search failed elements"></label>
