@@ -26,6 +26,9 @@ class ViewerServerTests(unittest.TestCase):
                 self.assertEqual(response.read(), b"[]")
             with urlopen(f"{url}/passes?token=test-token") as response:
                 self.assertEqual(json.load(response)[0]["reason"], "Value meets IDS rule")
+            with urlopen(f"{url}/logo.png?token=test-token") as response:
+                self.assertEqual(response.headers["Content-Type"], "image/png")
+                self.assertTrue(response.read().startswith(b"\x89PNG\r\n\x1a\n"))
             with self.assertRaises(HTTPError) as missing:
                 urlopen(f"{url}/model?token=wrong-token")
             self.assertEqual(missing.exception.code, 404)

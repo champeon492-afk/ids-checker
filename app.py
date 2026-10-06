@@ -14,8 +14,13 @@ from validator import csv_bytes, json_bytes, parse_ids_preview, pass_rows, run_v
 from workspace_store import create_project, load_project, project_path, save_project
 
 
-st.set_page_config(page_title="IDS Model Validator", page_icon="✅", layout="wide")
-st.title("IDS Model Validator")
+LOGO = Path(__file__).parent / "assets" / "ids-logo.png"
+st.set_page_config(page_title="IDS Model Validator", page_icon=str(LOGO), layout="wide")
+logo_column, title_column = st.columns([1, 15], vertical_alignment="center")
+with logo_column:
+    st.image(str(LOGO), width=52)
+with title_column:
+    st.title("IDS Model Validator")
 st.caption("Check one IFC model against one or more IDS information requirements files.")
 
 workspace_id = st.query_params.get("workspace", "")

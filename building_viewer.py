@@ -21,6 +21,7 @@ import streamlit.components.v1 as components
 
 _FRONTEND = Path(__file__).parent / "frontend"
 _ASSETS = {
+    "/logo.png": (Path(__file__).parent / "assets" / "ids-logo.png", "image/png"),
     "/viewer.js": (_FRONTEND / "viewer.bundle.js", "text/javascript; charset=utf-8"),
     "/viewer.css": (_FRONTEND / "viewer.css", "text/css; charset=utf-8"),
     "/tokens.css": (_FRONTEND / "design" / "tokens.css", "text/css; charset=utf-8"),
@@ -213,13 +214,14 @@ class ViewerHandler(BaseHTTPRequestHandler):
 def _viewer_html(token: str, workspace_id: str = "") -> str:
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" type="image/png" href="/logo.png?token={token}">
 <link rel="stylesheet" href="/tokens.css?token={token}">
 <link rel="stylesheet" href="/components.css?token={token}">
 <link rel="stylesheet" href="/viewer.css?token={token}">
 </head><body>
 <main class="workspace">
   <header class="workspace-head">
-    <div class="brand"><svg class="ot-icon ot-icon--large"><use href="/icons.svg?token={token}#orion"/></svg><div><span class="ot-eyebrow">Orion Twin interface</span><strong>IDS CHECKER</strong></div></div>
+    <div class="brand"><img class="brand-logo" src="/logo.png?token={token}" alt="IDS Checker logo"><div><span class="ot-eyebrow">Orion Twin interface</span><strong>IDS CHECKER</strong></div></div>
     <div class="head-right"><span class="ot-pill ot-pill--dark">IFC model workspace</span><span id="status" role="status">Starting viewer…</span></div>
   </header>
   <div class="workspace-main">

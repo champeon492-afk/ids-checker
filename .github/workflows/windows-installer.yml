@@ -12,6 +12,7 @@ on:
       - "*.py"
       - ".streamlit/**"
       - "frontend/**"
+      - "assets/**"
 
 permissions:
   contents: write

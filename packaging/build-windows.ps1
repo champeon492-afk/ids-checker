@@ -28,6 +28,7 @@ New-Item -ItemType Directory -Path $sitePackages -Force | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Could not package the Python dependencies." }
 
 Copy-Item -Path (Join-Path $root "*.py") -Destination $appDir
+Copy-Item -LiteralPath (Join-Path $root "assets") -Destination $appDir -Recurse
 New-Item -ItemType Directory -Path (Join-Path $appDir "frontend") -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $root "frontend\viewer.bundle.js") -Destination (Join-Path $appDir "frontend")
 Copy-Item -LiteralPath (Join-Path $root "frontend\viewer.css") -Destination (Join-Path $appDir "frontend")
