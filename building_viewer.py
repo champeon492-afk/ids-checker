@@ -16,7 +16,6 @@ import ifcopenshell
 import ifcopenshell.util.element
 
 import streamlit as st
-import streamlit.components.v1 as components
 from validator import pass_rows
 
 
@@ -313,4 +312,4 @@ def show_building(checks: list[dict], fingerprint: str, workspace_id: str = "") 
     token = st.session_state["viewer_token"]
     server.publish_checks(token, checks, workspace_id)
     url = f"http://127.0.0.1:{server.server_port}/?token={token}"
-    components.iframe(url, height=1040, scrolling=False)
+    st.iframe(url, height=1040, alt="Federated IFC model viewer")
