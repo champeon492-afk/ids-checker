@@ -17,6 +17,7 @@ import ifcopenshell.util.element
 
 import streamlit as st
 import streamlit.components.v1 as components
+from validator import pass_rows
 
 
 _FRONTEND = Path(__file__).parent / "frontend"
@@ -42,6 +43,9 @@ class ViewerUpload:
     model: ifcopenshell.file | None = None
     browser_data: bytes | None = None
     model_lock: threading.Lock = field(default_factory=threading.Lock)
+    checks: dict[str, "ViewerUpload"] | None = None
+    check_name: str = ""
+    ifc_filename: str = ""
 
 
 def _read_model(upload: ViewerUpload) -> ifcopenshell.file:
@@ -159,6 +163,19 @@ class ViewerServer(ThreadingHTTPServer):
             else:
                 self.uploads[token] = ViewerUpload(ifc_data, data, passed_data, now, workspace_id)
 
+    def publish_checks(self, token: str, checks: list[dict], workspace_id: str = "") -> None:
+        now = time.monotonic()
+        models = {}
+        for check in checks:
+            def viewer_rows(rows):
+                return [{"globalId": row.get("GlobalId", ""), "idsFile": row.get("IDS file", ""), "specification": row.get("Specification", ""), "ifcClass": row.get("IFC class", ""), "element": row.get("Element", ""), "requirement": row.get("Requirement", ""), "reason": row.get("Reason", "")} for row in rows]
+            issues = [row for result in check["results"] for row in result["issues"]]
+            passes = [row for result in check["results"] for row in (result.get("passes") if result.get("passes") is not None else pass_rows(result["report"], result["ids_file"]))]
+            models[check["id"]] = ViewerUpload(check["ifc_data"], json.dumps(viewer_rows(issues), ensure_ascii=False).encode(), json.dumps(viewer_rows(passes), ensure_ascii=False).encode(), now, workspace_id, check_name=check["name"], ifc_filename=check["ifc_filename"])
+        with _LOCK:
+            self.uploads = {key: value for key, value in self.uploads.items() if now - value.last_access < 7200}
+            self.uploads[token] = ViewerUpload(b"", b"[]", b"[]", now, workspace_id, checks=models)
+
 
 class ViewerHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
@@ -169,7 +186,21 @@ class ViewerHandler(BaseHTTPRequestHandler):
         if not upload:
             self.send_error(404, "Viewer session expired")
             return
-        if parsed.path == "/":
+        query = parse_qs(parsed.query)
+        if upload.checks is not None and parsed.path == "/checks":
+            body = json.dumps([{"id": check_id, "name": item.check_name, "filename": item.ifc_filename, "issues": len(json.loads(item.issues_data)), "passes": len(json.loads(item.passes_data))} for check_id, item in upload.checks.items()], ensure_ascii=False).encode()
+            kind = "application/json; charset=utf-8"
+        else:
+            body = None
+        if upload.checks is not None and parsed.path in ("/model", "/issues", "/passes", "/browser", "/properties"):
+            check_id = query.get("check", [""])[0]
+            if check_id not in upload.checks:
+                self.send_error(404, "Validation set not found")
+                return
+            upload = upload.checks[check_id]
+        if body is not None:
+            pass
+        elif parsed.path == "/":
             body = _viewer_html(token, upload.workspace_id).encode("utf-8")
             kind = "text/html; charset=utf-8"
         elif parsed.path in _ASSETS:
@@ -222,7 +253,7 @@ def _viewer_html(token: str, workspace_id: str = "") -> str:
 <main class="workspace">
   <header class="workspace-head">
     <div class="brand"><img class="brand-logo" src="/logo.png?token={token}" alt="IDS Checker logo"><strong>IDS Model Viewer</strong></div>
-    <div class="head-right"><span class="ot-pill ot-pill--dark">IFC model workspace</span><span id="status" role="status">Starting viewer…</span></div>
+    <div class="head-right"><span class="ot-pill ot-pill--dark">Federated IFC workspace</span><span id="status" role="status">Starting viewer…</span></div>
   </header>
   <div class="workspace-main">
     <aside class="failures ot-dark-card" aria-label="Validation results">
@@ -242,8 +273,9 @@ def _viewer_html(token: str, workspace_id: str = "") -> str:
       </section>
     </aside>
     <section class="viewer ot-dark-card" aria-label="IFC 3D viewer">
-      <div class="viewer-head"><div><span class="ot-eyebrow">Model view</span><h2 id="view-title">Building overview</h2></div><div class="viewer-actions"><button id="pick-element" class="view-button" type="button" aria-pressed="true">Select in 3D</button><button id="isolate-selected" class="view-button" type="button" aria-pressed="false" disabled>Isolate selected</button><button id="clear-selection" class="view-button" type="button" disabled>Clear selection</button><button id="reset-view" class="view-button" type="button" disabled>Fit building</button><button id="show-properties" class="view-button" type="button">Properties</button><button id="show-browser" class="view-button" type="button">Model browser</button></div></div>
+      <div class="viewer-head"><div><span class="ot-eyebrow">Model view</span><h2 id="view-title">Building overview</h2></div><div class="viewer-actions"><button id="pick-element" class="view-button" type="button" aria-pressed="true">Select in 3D</button><button id="isolate-selected" class="view-button" type="button" aria-pressed="false" disabled>Isolate selected</button><button id="clear-selection" class="view-button" type="button" disabled>Clear selection</button><button id="reset-view" class="view-button" type="button" disabled>Fit federation</button><button id="style-toggle" class="view-button" type="button" aria-pressed="true">Soft outline</button><button id="show-models" class="view-button" type="button" aria-pressed="false">Models</button><button id="show-properties" class="view-button" type="button">Properties</button><button id="show-browser" class="view-button" type="button">Model browser</button></div></div>
       <div class="viewport"><div id="canvas" aria-label="Interactive 3D model"></div><div id="viewport-hint" class="viewport-hint">Click an element to inspect · Drag to orbit · Scroll to zoom</div>
+        <aside id="models-panel" class="models-panel ot-glass-card" aria-label="IFC models" hidden><div class="models-head"><strong>IFC models</strong><button id="close-models" class="close-inspector" type="button" aria-label="Close models panel">×</button></div><p>Turn models on or off in 3D. Select one to inspect its IDS results.</p><div id="models-list"></div></aside>
         <section id="selected-issues" class="selected-issues ot-glass-card" aria-label="Selected element validation issues" hidden></section>
         <aside id="inspector" class="inspector ot-glass-card" aria-label="Element inspector" hidden>
           <div class="inspector-head"><strong>Properties</strong><button id="close-inspector" class="close-inspector" type="button" aria-label="Close inspector">×</button></div>
@@ -272,13 +304,13 @@ def _get_server() -> ViewerServer:
         return _SERVER
 
 
-def show_building(ifc_data: bytes, issues: list[dict], passes: list[dict], fingerprint: str, workspace_id: str = "") -> None:
+def show_building(checks: list[dict], fingerprint: str, workspace_id: str = "") -> None:
     """Display the whole IFC model without putting its bytes in Streamlit messages."""
     server = _get_server()
     if st.session_state.get("viewer_fingerprint") != fingerprint:
         st.session_state["viewer_token"] = secrets.token_urlsafe(32)
         st.session_state["viewer_fingerprint"] = fingerprint
     token = st.session_state["viewer_token"]
-    server.publish(token, ifc_data, issues, passes, workspace_id)
+    server.publish_checks(token, checks, workspace_id)
     url = f"http://127.0.0.1:{server.server_port}/?token={token}"
     components.iframe(url, height=1040, scrolling=False)

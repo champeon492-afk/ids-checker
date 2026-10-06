@@ -16,7 +16,7 @@ try {
         "-m", "streamlit", "run", ('"' + $app + '"'),
         "--server.address=127.0.0.1", "--server.port=8527",
         "--server.headless=true", "--browser.gatherUsageStats=false"
-    ) -WorkingDirectory (Join-Path $package "app") -PassThru -RedirectStandardOutput (Join-Path $env:TEMP "ids-checker-test-out.log") -RedirectStandardError (Join-Path $env:TEMP "ids-checker-test-err.log")
+    ) -WorkingDirectory (Join-Path $package "app") -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $env:TEMP "ids-checker-test-out.log") -RedirectStandardError (Join-Path $env:TEMP "ids-checker-test-err.log")
     $healthy = $false
     for ($attempt = 0; $attempt -lt 60; $attempt++) {
         Start-Sleep -Milliseconds 500

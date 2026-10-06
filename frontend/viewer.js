@@ -30,6 +30,15 @@ let shownFailures = 80;
 let shownPasses = 80;
 let activeResults = "failed";
 let model;
+let checks = [];
+const modelById = new Map();
+const modelVisible = new Map();
+let activeCheckId = "";
+let modelsOpen = false;
+let softStyle = true;
+let sceneLights = [];
+let outlineOverlay;
+const otherGhosted = new Set();
 let world;
 let fragments;
 let selectedGuid = "";
@@ -122,6 +131,9 @@ function rememberView() {
   if (!viewStorageKey) return;
   try {
     sessionStorage.setItem(viewStorageKey, JSON.stringify({
+      activeCheckId,
+      modelVisible: Object.fromEntries(modelVisible),
+      softStyle,
       selectedGuid,
       selectedClass,
       relationshipGroup: selectedRelationshipGroup ? { stage: selectedRelationshipGroup.stage, key: selectedRelationshipGroup.key, label: selectedRelationshipGroup.label, path: relationshipSelection.slice(0, 4) } : null,
@@ -135,11 +147,15 @@ function rememberView() {
   } catch (_) { /* Private browsing may disable session storage. */ }
 }
 
-function restoreView() {
+function restoreView(savedState = null) {
   if (!viewStorageKey) return;
   try {
-    const state = JSON.parse(sessionStorage.getItem(viewStorageKey) || "null");
+    const state = savedState || JSON.parse(sessionStorage.getItem(viewStorageKey) || "null");
     if (!state || typeof state !== "object") return;
+    softStyle = state.softStyle !== false;
+    for (const [id, visible] of Object.entries(state.modelVisible || {})) if (modelById.has(id)) modelVisible.set(id, visible !== false);
+    applyModelVisibility();
+    applyStyle();
     selectedClass = failureGroups.some((group) => group.ifcClass === state.selectedClass) ? state.selectedClass : "";
     selectedGuid = typeof state.selectedGuid === "string" && state.selectedGuid.length <= 64 ? state.selectedGuid : "";
     const savedGroup = state.relationshipGroup;
@@ -369,7 +385,7 @@ async function showProperties(guid, version) {
   showInspector("properties");
   propertiesPanel.replaceChildren(node("p", "empty-note", "Reading IFC attributes, property sets and quantities…"));
   try {
-    const data = await getJson("/properties", `&guid=${encodeURIComponent(guid)}`);
+    const data = await getJson("/properties", `&check=${encodeURIComponent(activeCheckId)}&guid=${encodeURIComponent(guid)}`);
     if (version !== selectionVersion) return;
     propertiesPanel.replaceChildren();
     propertiesPanel.append(node("h3", "", `${data.ifcClass} · ${data.name}`));
@@ -463,11 +479,14 @@ async function applyVisualState(revision, frame) {
     if (frameIds.length) {
       const box = relationshipGroup?.stage === 0 && groupIds.length === frameIds.length ? model.box : await model.getMergedBox(frameIds);
       if (!box.isEmpty()) await frameBox(box);
-    } else if (!guid && !ifcClass) await frameBox(model.box);
+    } else if (!guid && !ifcClass) await frameBox(federationBox());
   }
+  await applyOtherModelGhosts(nextGhost);
+  await updateOutline(guid && elementIds.length ? elementIds[0] : null);
   fragments.core.update(true);
   if (revision !== visualRevision) return;
-  if (guid && !elementIds.length) setStatus("This element has no viewable geometry. Its IFC properties are shown.");
+  if (modelVisible.get(activeCheckId) === false) setStatus("This IFC is hidden. Turn it on in Models to see the selection.");
+  else if (guid && !elementIds.length) setStatus("This element has no viewable geometry. Its IFC properties are shown.");
   else if (relationshipGroup && !groupIds.length) setStatus(`${relationshipGroup.label} contains no viewable model elements.`);
   else if (relationshipGroup) setStatus(`${groupIds.length.toLocaleString()} elements in ${relationshipGroup.label} highlighted${isolate ? "; other elements are transparent" : ""}.`);
   else if (guid && !failureGroups.some((group) => group.globalId === guid) && passGroups.some((group) => group.globalId === guid)) setStatus("Selected element passed its recorded IDS checks.");
@@ -585,7 +604,10 @@ async function pickElement(event, renderCanvas) {
     const hits = await model.raycastAll(data);
     hit = hits?.find((item) => allowed.has(item.localId));
   } else {
-    hit = await model.raycast(data);
+    const hits = await Promise.all([...modelById].filter(([id]) => modelVisible.get(id) !== false).map(async ([id, candidate]) => ({ id, candidate, hit: await candidate.raycast(data) })));
+    const nearest = hits.filter((entry) => entry.hit).sort((a, b) => world.camera.three.position.distanceTo(a.hit.point) - world.camera.three.position.distanceTo(b.hit.point))[0];
+    if (nearest && nearest.id !== activeCheckId) await activateCheck(nearest.id);
+    hit = nearest?.hit;
   }
   if (revision !== pickRevision) return;
   if (!hit) {
@@ -833,7 +855,7 @@ function renderRelationshipSearch() {
 async function loadRelationshipBrowser() {
   if (!treeNodes) {
     relationshipColumns.replaceChildren(node("p", "empty-note", "Reading IFC relationships…"));
-    treeNodes = await getJson("/browser");
+    treeNodes = await getJson("/browser", `&check=${encodeURIComponent(activeCheckId)}`);
     treeIndex = new Map(treeNodes.map((item) => [item.globalId, item]));
     relationshipCacheScope = null;
     relationshipCacheElements = null;
@@ -872,7 +894,10 @@ function wireControls() {
     refreshVisuals(false).catch((error) => setStatus(error.message, true));
   });
   byId("clear-selection").addEventListener("click", () => clearSelection().catch((error) => setStatus(error.message, true)));
-  byId("reset-view").addEventListener("click", () => frameBox(model.box));
+  byId("reset-view").addEventListener("click", () => frameBox(federationBox()));
+  byId("show-models").addEventListener("click", () => setModelsOpen(!modelsOpen));
+  byId("close-models").addEventListener("click", () => setModelsOpen(false));
+  byId("style-toggle").addEventListener("click", () => { softStyle = !softStyle; applyStyle(); rememberView(); });
   byId("show-properties").addEventListener("click", showInspector);
   byId("show-browser").addEventListener("click", () => setBrowserOpen(!browserOpen));
   byId("close-inspector").addEventListener("click", () => { inspector.hidden = true; byId("show-properties").setAttribute("aria-pressed", "false"); });
@@ -881,25 +906,174 @@ function wireControls() {
   window.addEventListener("resize", () => requestAnimationFrame(drawRelationshipLines));
 }
 
+function federationBox() {
+  const box = new THREE.Box3();
+  for (const [id, candidate] of modelById) if (modelVisible.get(id) !== false) box.union(candidate.box);
+  return box.isEmpty() && model ? model.box : box;
+}
+
+function setModelsOpen(open) {
+  modelsOpen = open;
+  byId("models-panel").hidden = !open;
+  byId("show-models").setAttribute("aria-pressed", String(open));
+  if (open) renderModels();
+}
+
+function renderModels() {
+  const list = byId("models-list");
+  list.replaceChildren();
+  for (const check of checks) {
+    const row = node("div", "model-row");
+    const toggle = node("input");
+    toggle.type = "checkbox";
+    toggle.checked = modelVisible.get(check.id) !== false;
+    toggle.setAttribute("aria-label", `Show ${check.filename} in 3D`);
+    toggle.addEventListener("change", () => {
+      modelVisible.set(check.id, toggle.checked);
+      applyModelVisibility().catch((error) => setStatus(error.message, true));
+      rememberView();
+    });
+    const choice = node("button", "model-choice", check.name || check.filename);
+    choice.type = "button";
+    choice.title = `${check.filename} · ${check.issues.toLocaleString()} issues`;
+    choice.setAttribute("aria-current", String(activeCheckId === check.id));
+    choice.addEventListener("click", () => activateCheck(check.id).catch((error) => setStatus(error.message, true)));
+    row.append(toggle, choice, node("small", "", `${check.issues.toLocaleString()} issues`));
+    list.append(row);
+  }
+}
+
+async function applyModelVisibility() {
+  for (const [id, candidate] of modelById) {
+    const visible = modelVisible.get(id) !== false;
+    candidate.object.visible = visible;
+    await candidate.setVisible(undefined, visible);
+  }
+  if (fragments) fragments.core.update(true);
+  renderModels();
+}
+
+async function applyOtherModelGhosts(ghost) {
+  for (const [id, candidate] of modelById) {
+    if (id === activeCheckId) continue;
+    if (ghost && modelVisible.get(id) !== false) {
+      if (!otherGhosted.has(id)) await candidate.setOpacity(undefined, 0.12);
+      otherGhosted.add(id);
+    } else if (otherGhosted.has(id)) {
+      await candidate.resetOpacity(undefined);
+      otherGhosted.delete(id);
+    }
+  }
+}
+
+function clearOutline() {
+  if (!outlineOverlay) return;
+  outlineOverlay.parent?.remove(outlineOverlay);
+  outlineOverlay.traverse((object) => { object.geometry?.dispose(); object.material?.dispose(); });
+  outlineOverlay = null;
+}
+
+async function updateOutline(localId) {
+  clearOutline();
+  if (!softStyle || localId == null || !model) return;
+  const targetModel = model;
+  const geometryGroups = await targetModel.getItemsGeometry([localId]);
+  if (targetModel !== model || !selectedGuid || !softStyle) return;
+  const group = new THREE.Group();
+  for (const part of geometryGroups.flat()) {
+    if (!part.positions || !part.indices) continue;
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(part.positions), 3));
+    geometry.setIndex(new THREE.BufferAttribute(part.indices, 1));
+    geometry.applyMatrix4(part.transform);
+    geometry.computeBoundingBox();
+    const center = geometry.boundingBox.getCenter(new THREE.Vector3());
+    const radius = Math.max(geometry.boundingBox.getSize(new THREE.Vector3()).length() / 2, 0.01);
+    geometry.translate(-center.x, -center.y, -center.z);
+    const shell = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ color: 0x050505, side: THREE.BackSide, depthWrite: false }));
+    shell.position.copy(center);
+    shell.scale.setScalar(1 + Math.min(0.04, 0.035 / radius));
+    shell.renderOrder = 4;
+    group.add(shell);
+  }
+  if (group.children.length) {
+    targetModel.object.add(group);
+    outlineOverlay = group;
+  }
+}
+
+function applyStyle() {
+  byId("style-toggle").setAttribute("aria-pressed", String(softStyle));
+  if (!world) return;
+  world.scene.three.background = new THREE.Color(softStyle ? "#a9b0a9" : "#8c978d");
+  for (const light of sceneLights) light.visible = softStyle;
+  if (!softStyle) clearOutline();
+  else if (selectedGuid) localIdForGuid(selectedGuid).then(updateOutline).catch(() => {});
+  fragments?.core.update(true);
+}
+
+async function activateCheck(checkId) {
+  if (checkId === activeCheckId || !modelById.has(checkId)) return;
+  if (visualWork) await visualWork.catch(() => {});
+  clearOutline();
+  if (model) {
+    if (coloredIds.length) await model.resetColor(coloredIds);
+    if (ghostActive) await model.resetOpacity(undefined);
+  }
+  activeCheckId = checkId;
+  model = modelById.get(checkId);
+  coloredIds = [];
+  opaqueIds = [];
+  ghostActive = false;
+  guidLocalIds.clear();
+  classLocalIds.clear();
+  treeNodes = null;
+  treeIndex = null;
+  relationshipCacheScope = null;
+  relationshipCacheElements = null;
+  relationshipSelection.fill("");
+  relationshipPage.fill(0);
+  selectedGuid = "";
+  selectedClass = "";
+  selectedRelationshipGroup = null;
+  selectedRequirementGroup = null;
+  selectedName = "";
+  selectionVersion += 1;
+  clearProperties();
+  selectedIssues.hidden = true;
+  const scope = `&check=${encodeURIComponent(checkId)}`;
+  [issues, passes] = await Promise.all([getJson("/issues", scope), getJson("/passes", scope)]);
+  buildFailureGroups();
+  buildPassGroups();
+  renderSelectedIssues();
+  updateSelectionControls();
+  await applyOtherModelGhosts(false);
+  renderModels();
+  rememberView();
+  setStatus(`${checks.find((c) => c.id === checkId)?.filename || "Model"} selected · ${failedElementCount().toLocaleString()} failed elements`);
+  if (browserOpen) loadRelationshipBrowser().catch((error) => setStatus(error.message, true));
+}
+
 async function start() {
   wireControls();
   updatePickControl();
-  setStatus("Preparing IFC model…");
-  [issues, passes] = await Promise.all([getJson("/issues"), getJson("/passes")]);
-  buildFailureGroups();
-  buildPassGroups();
-  restoreView();
-  const response = await fetch(`/model?token=${token}`);
-  if (!response.ok) throw new Error("The IFC model could not be retrieved from the local viewer service.");
-  const bytes = new Uint8Array(await response.arrayBuffer());
+  setStatus("Preparing federated IFC models…");
+  checks = await getJson("/checks");
+  if (!checks.length) throw new Error("This project contains no IFC models.");
   const components = new OBC.Components();
   const worlds = components.get(OBC.Worlds);
   world = worlds.create();
   world.scene = new OBC.SimpleScene(components);
   world.scene.setup();
-  world.scene.three.background = new THREE.Color("#8c978d");
   world.renderer = new OBC.SimpleRenderer(components, canvas);
   world.camera = new OBC.OrthoPerspectiveCamera(components);
+  const hemisphere = new THREE.HemisphereLight(0xffffff, 0x69766e, 1.1);
+  const keyLight = new THREE.DirectionalLight(0xffffff, 1.2);
+  keyLight.position.set(12, 25, 16);
+  const fillLight = new THREE.DirectionalLight(0xd8e5ff, 0.45);
+  fillLight.position.set(-18, 9, -12);
+  sceneLights = [hemisphere, keyLight, fillLight];
+  for (const light of sceneLights) world.scene.three.add(light);
   components.init();
   fragments = components.get(OBC.FragmentsManager);
   const workerUrl = await OBC.FragmentsManager.getWorker();
@@ -912,14 +1086,26 @@ async function start() {
   });
   const loader = components.get(OBC.IfcLoader);
   await loader.setup({ autoSetWasm: false, wasm: { path: "https://unpkg.com/web-ifc@0.0.77/", absolute: true } });
-  setStatus("Converting IFC geometry for viewing…");
-  model = await loader.load(bytes, false, "uploaded-building");
+  for (const [index, check] of checks.entries()) {
+    setStatus(`Loading IFC model ${index + 1} of ${checks.length}: ${check.filename}`);
+    const response = await fetch(`/model?token=${token}&check=${encodeURIComponent(check.id)}`);
+    if (!response.ok) throw new Error(`Could not retrieve ${check.filename} from the local viewer service.`);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const loaded = await loader.load(bytes, true, check.id);
+    modelById.set(check.id, loaded);
+    modelVisible.set(check.id, true);
+  }
+  applyStyle();
+  const savedState = viewStorageKey ? JSON.parse(sessionStorage.getItem(viewStorageKey) || "null") : null;
+  await activateCheck(checks.some((check) => check.id === savedState?.activeCheckId) ? savedState.activeCheckId : checks[0].id);
+  restoreView(savedState);
+  await applyModelVisibility();
   wireModelPicking();
-  await frameBox(model.box);
+  await frameBox(federationBox());
   fragments.core.update(true);
   byId("reset-view").disabled = false;
   updateSelectionControls();
-  setStatus(`Whole building loaded · ${failedElementCount().toLocaleString()} failed elements`);
+  setStatus(`${checks.length} IFC model(s) loaded · ${failedElementCount().toLocaleString()} failed elements in ${checks.find((c) => c.id === activeCheckId)?.filename}`);
   if (selectedGuid || selectedClass || selectedRelationshipGroup) refreshVisuals().catch((error) => setStatus(error.message, true));
 }
 

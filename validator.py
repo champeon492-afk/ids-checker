@@ -273,9 +273,9 @@ def pass_rows(result: dict, ids_file: str = "", model=None) -> list[dict[str, st
 
 
 def csv_bytes(rows: list[dict[str, str]]) -> bytes:
-    fields = ["IDS file", "Specification", "Requirement", "IFC class", "GlobalId", "Element", "Reason"]
+    fields = (["Check", "IFC model"] if any("Check" in row for row in rows) else []) + ["IDS file", "Specification", "Requirement", "IFC class", "GlobalId", "Element", "Reason"]
     stream = io.StringIO()
-    writer = csv.DictWriter(stream, fieldnames=fields)
+    writer = csv.DictWriter(stream, fieldnames=fields, extrasaction="ignore")
     writer.writeheader()
     writer.writerows(rows)
     return stream.getvalue().encode("utf-8-sig")

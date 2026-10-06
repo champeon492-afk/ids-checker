@@ -48,4 +48,4 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" dist/IDS-Checker-Setup.exe --title "IDS Checker ${{ github.ref_name }}" --notes "Download and run IDS-Checker-Setup.exe. It installs the validator, adds a desktop shortcut, and opens the app in your browser."
+        run: gh release create "${{ github.ref_name }}" dist/IDS-Checker-Setup.exe --title "IDS Checker ${{ github.ref_name }}" --notes-file packaging/release-notes.md

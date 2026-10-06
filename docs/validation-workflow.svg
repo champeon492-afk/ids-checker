@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 640" role="img" aria-labelledby="title description">
   <title id="title">IDS Checker validation workflow</title>
-  <desc id="description">An IDS requirement and an IFC model enter the validator. The results list passed and failed checks, show distinct elements beside a 3D model, and can be saved or exported. Example data only.</desc>
+  <desc id="description">Each validation set pairs one IFC model with its own IDS files. The results list passed and failed checks, show distinct elements beside federated IFC models, and can be saved or exported. Example data only.</desc>
   <defs>
     <style>
       .bg{fill:#0a0c0b}.card{fill:#171a18;stroke:#3a433d;stroke-width:2}.muted{fill:#a8b2aa}.white{fill:#f6f8f5}.lime{fill:#baff16}.red{fill:#f47a79}.line{stroke:#baff16;stroke-width:3;fill:none;marker-end:url(#arrow)}
@@ -13,22 +13,22 @@
   <text class="small muted" x="940" y="47">Illustrative example</text>
 
   <rect class="card" x="40" y="82" width="330" height="136" rx="12"/>
-  <text class="tag lime" x="58" y="108">1  UPLOAD IDS FILES</text>
+  <text class="tag lime" x="58" y="108">1  ADD IDS FILES TO A SET</text>
   <text class="section white" x="58" y="137">Information requirements</text>
   <text class="body muted" x="58" y="165">IfcWall needs FireRating</text>
   <text class="small muted" x="58" y="188">Pset_WallCommon.FireRating</text>
 
   <path class="line" d="M380 150 H412"/>
   <rect class="card" x="425" y="82" width="330" height="136" rx="12"/>
-  <text class="tag lime" x="443" y="108">2  UPLOAD IFC MODEL</text>
+  <text class="tag lime" x="443" y="108">2  PAIR WITH AN IFC MODEL</text>
   <text class="section white" x="443" y="137">Building elements</text>
   <text class="body muted" x="443" y="165">Wall W-01: FireRating = 60</text>
   <text class="body muted" x="443" y="188">Wall W-02: FireRating missing</text>
 
   <path class="line" d="M765 150 H797"/>
   <rect class="card" x="810" y="82" width="350" height="136" rx="12"/>
-  <text class="tag lime" x="828" y="108">3  RUN VALIDATION</text>
-  <text class="section white" x="828" y="137">Compare IDS with IFC</text>
+  <text class="tag lime" x="828" y="108">3  ADD SETS AND RUN</text>
+  <text class="section white" x="828" y="137">Check each discipline</text>
   <text class="body muted" x="828" y="165">Find applicable model elements</text>
   <text class="body muted" x="828" y="188">Evaluate each information rule</text>
 
@@ -51,7 +51,7 @@
   <text class="small white" x="72" y="529">W-01 · FireRating = 60</text>
 
   <rect class="card" x="403" y="346" width="757" height="222" rx="12"/>
-  <text class="tag lime" x="421" y="371">6  INSPECT IN 3D</text>
+  <text class="tag lime" x="421" y="371">6  INSPECT FEDERATED 3D</text>
   <text class="section white" x="421" y="400">IDS Model Viewer</text>
   <rect x="422" y="416" width="490" height="132" rx="8" fill="#809080"/>
   <path d="M488 493 L625 440 L790 483 L655 533 Z" fill="#b6c4b6" fill-opacity=".55" stroke="#e6eee5"/>
