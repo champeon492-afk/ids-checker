@@ -1,5 +1,5 @@
 #define AppName "IDS Checker"
-#define AppVersion "1.1.1"
+#define AppVersion "1.1.2"
 
 [Setup]
 AppId={{A8E1A342-04CE-45BB-A3FA-A13DCE175144}

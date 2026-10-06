@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import zipfile
@@ -16,11 +17,14 @@ from workspace_store import create_project, load_project, project_path, save_pro
 
 LOGO = Path(__file__).parent / "assets" / "ids-logo.png"
 st.set_page_config(page_title="IDS Model Validator", page_icon=str(LOGO), layout="wide")
-logo_column, title_column = st.columns([1, 15], vertical_alignment="center")
-with logo_column:
-    st.image(str(LOGO), width=52)
-with title_column:
-    st.title("IDS Model Validator")
+logo_data = base64.b64encode(LOGO.read_bytes()).decode("ascii")
+st.markdown(
+    f'<div style="display:flex;align-items:center;gap:14px">'
+    f'<img src="data:image/png;base64,{logo_data}" alt="IDS Checker logo" '
+    'style="width:52px;height:52px;flex:none">'
+    '<h1 style="margin:0">IDS Model Validator</h1></div>',
+    unsafe_allow_html=True,
+)
 st.caption("Check one IFC model against one or more IDS information requirements files.")
 
 workspace_id = st.query_params.get("workspace", "")
