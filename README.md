@@ -6,7 +6,7 @@ A local web app that reads an Information Delivery Specification (`.ids`), shows
 
 ### One-click Windows install
 
-The Windows installer bundles Python and the app. Download `IDS-Checker-Setup.exe` from the latest successful **Windows installer** run in [GitHub Actions](https://github.com/champeon492-afk/ids-checker/actions/workflows/windows-installer.yml), run it once, and use the **IDS Checker** desktop shortcut. The shortcut starts the local validator and opens it in your default browser. No separate Python or Node.js installation is needed. The installer also adds a Start menu shortcut and an uninstaller. Windows may show a security warning for this unsigned installer.
+The Windows installer bundles Python and the app. Download `IDS-Checker-Setup.exe` from [GitHub Releases](https://github.com/champeon492-afk/ids-checker/releases), run it once, and use the **IDS Checker** desktop shortcut. The shortcut starts the local validator and opens it in your default browser. No separate Python or Node.js installation is needed. The installer also adds a Start menu shortcut and an uninstaller. Windows may show a security warning for this unsigned installer.
 
 Installed copies save automatic project backups under `%LOCALAPPDATA%\IDS Checker\projects`. These remain available when the app is upgraded. The portable `.idscheck` download is still the easiest way to give a validation session to a colleague. The 3D viewer currently needs internet access for its That Open worker and Web IFC files.
 
