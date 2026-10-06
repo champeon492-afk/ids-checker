@@ -1,3 +1,7 @@
+## IDS Checker 2.0.2
+
+- Fixed selected IFC objects sometimes appearing as solid black surfaces when **Soft outline** was enabled. The viewer now draws thin black edge lines while retaining each object's original surface color.
+
 ## IDS Checker 2.0.1
 
 - Create multiple validation sets, each pairing one IFC with one or more IDS files. Add another set to an existing saved project.

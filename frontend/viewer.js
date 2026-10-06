@@ -1,5 +1,8 @@
 import * as OBC from "@thatopen/components";
 import * as THREE from "three";
+import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
+import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
+import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 
 const token = encodeURIComponent(window.viewerToken);
 const byId = (id) => document.getElementById(id);
@@ -38,6 +41,7 @@ let modelsOpen = false;
 let softStyle = true;
 let sceneLights = [];
 let outlineOverlay;
+let outlineRevision = 0;
 const otherGhosted = new Set();
 let world;
 let fragments;
@@ -967,6 +971,7 @@ async function applyOtherModelGhosts(ghost) {
 }
 
 function clearOutline() {
+  outlineRevision += 1;
   if (!outlineOverlay) return;
   outlineOverlay.parent?.remove(outlineOverlay);
   outlineOverlay.traverse((object) => { object.geometry?.dispose(); object.material?.dispose(); });
@@ -976,9 +981,11 @@ function clearOutline() {
 async function updateOutline(localId) {
   clearOutline();
   if (!softStyle || localId == null || !model) return;
+  const revision = outlineRevision;
   const targetModel = model;
+  const targetGuid = selectedGuid;
   const geometryGroups = await targetModel.getItemsGeometry([localId]);
-  if (targetModel !== model || !selectedGuid || !softStyle) return;
+  if (revision !== outlineRevision || targetModel !== model || selectedGuid !== targetGuid || !softStyle) return;
   const group = new THREE.Group();
   for (const part of geometryGroups.flat()) {
     if (!part.positions || !part.indices) continue;
@@ -986,15 +993,16 @@ async function updateOutline(localId) {
     geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(part.positions), 3));
     geometry.setIndex(new THREE.BufferAttribute(part.indices, 1));
     geometry.applyMatrix4(part.transform);
-    geometry.computeBoundingBox();
-    const center = geometry.boundingBox.getCenter(new THREE.Vector3());
-    const radius = Math.max(geometry.boundingBox.getSize(new THREE.Vector3()).length() / 2, 0.01);
-    geometry.translate(-center.x, -center.y, -center.z);
-    const shell = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ color: 0x050505, side: THREE.BackSide, depthWrite: false }));
-    shell.position.copy(center);
-    shell.scale.setScalar(1 + Math.min(0.04, 0.035 / radius));
-    shell.renderOrder = 4;
-    group.add(shell);
+    // Draw sharp boundary edges only. An inflated back-face mesh can cover open IFC surfaces.
+    const edges = new THREE.EdgesGeometry(geometry, 35);
+    geometry.dispose();
+    if (!edges.attributes.position.count) { edges.dispose(); continue; }
+    const lineGeometry = new LineSegmentsGeometry().fromEdgesGeometry(edges);
+    edges.dispose();
+    const lines = new LineSegments2(lineGeometry, new LineMaterial({ color: 0x050505, linewidth: 2.4, depthTest: true, depthWrite: false, transparent: true, opacity: 0.95 }));
+    lines.raycast = () => {};
+    lines.renderOrder = 4;
+    group.add(lines);
   }
   if (group.children.length) {
     targetModel.object.add(group);

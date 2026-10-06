@@ -81,7 +81,7 @@ An element can appear in **both** element lists when it passes one IDS requireme
 
 - Load all IFCs into one That Open scene using their IFC coordinates; drag to orbit and scroll to zoom.
 - Open **Models** to select the active IFC's results and independently show or hide each IFC in 3D. Element selection, properties, results, and relationships remain tied to the correct model even if two IFCs reuse a `GlobalId`.
-- **Soft outline** adds a black silhouette around a selected object and gentler ambient/directional lighting. Turn it off for the original technical presentation. It changes appearance only; IFC geometry is not rounded or modified.
+- **Soft outline** adds thin black edge lines around a selected object and gentler ambient/directional lighting. Turn it off for the original technical presentation. It changes appearance only; IFC geometry is not rounded or modified.
 - Search the failed and passed element lists. The lists initially show a limited number of cards; **Show more** reveals additional results.
 - Click a class bar to filter failures by IFC class and highlight the corresponding model elements. Class bar values count validation issues.
 - Select an element card, click a model element with **Select in 3D** enabled, or choose it in **Model browser**. The selection is highlighted in lime and its recorded results appear in the viewer.
