@@ -7,6 +7,8 @@ $env:IDS_CHECKER_DATA_DIR = Join-Path $env:TEMP "ids-checker-package-test"
 
 & $python -c "import streamlit, ifcopenshell, ifctester, building_viewer, validator, workspace_store" 
 if ($LASTEXITCODE -ne 0) { throw "Packaged dependencies could not be imported." }
+& $python -m unittest discover -s (Join-Path $root "tests")
+if ($LASTEXITCODE -ne 0) { throw "The packaged app failed its validation tests." }
 
 $server = $null
 try {

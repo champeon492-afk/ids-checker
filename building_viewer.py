@@ -35,6 +35,7 @@ _SERVER = None
 class ViewerUpload:
     ifc_data: bytes
     issues_data: bytes
+    passes_data: bytes
     last_access: float
     workspace_id: str = ""
     model: ifcopenshell.file | None = None
@@ -129,28 +130,33 @@ class ViewerServer(ThreadingHTTPServer):
         super().__init__(("127.0.0.1", 0), ViewerHandler)
         self.uploads: dict[str, ViewerUpload] = {}
 
-    def publish(self, token: str, ifc_data: bytes, issues: list[dict], workspace_id: str = "") -> None:
-        viewer_issues = [
-            {
-                "globalId": row["GlobalId"],
-                "idsFile": row["IDS file"],
-                "specification": row["Specification"],
-                "ifcClass": row["IFC class"],
-                "element": row["Element"],
-                "requirement": row["Requirement"],
-                "reason": row["Reason"],
-            }
-            for row in issues
-        ]
-        data = json.dumps(viewer_issues, ensure_ascii=False).encode("utf-8")
+    def publish(self, token: str, ifc_data: bytes, issues: list[dict], passes: list[dict] | None = None, workspace_id: str = "") -> None:
+        def viewer_rows(rows):
+            return [
+                {
+                    "globalId": row["GlobalId"],
+                    "idsFile": row["IDS file"],
+                    "specification": row["Specification"],
+                    "ifcClass": row["IFC class"],
+                    "element": row["Element"],
+                    "requirement": row["Requirement"],
+                    "reason": row["Reason"],
+                }
+                for row in rows
+            ]
+
+        data = json.dumps(viewer_rows(issues), ensure_ascii=False).encode("utf-8")
+        passed_data = json.dumps(viewer_rows(passes or []), ensure_ascii=False).encode("utf-8")
         with _LOCK:
             now = time.monotonic()
             self.uploads = {key: value for key, value in self.uploads.items() if now - value.last_access < 7200}
             if token in self.uploads:
                 self.uploads[token].last_access = now
                 self.uploads[token].workspace_id = workspace_id
+                self.uploads[token].issues_data = data
+                self.uploads[token].passes_data = passed_data
             else:
-                self.uploads[token] = ViewerUpload(ifc_data, data, now, workspace_id)
+                self.uploads[token] = ViewerUpload(ifc_data, data, passed_data, now, workspace_id)
 
 
 class ViewerHandler(BaseHTTPRequestHandler):
@@ -173,6 +179,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
             kind = "application/octet-stream"
         elif parsed.path == "/issues":
             body = upload.issues_data
+            kind = "application/json; charset=utf-8"
+        elif parsed.path == "/passes":
+            body = upload.passes_data
             kind = "application/json; charset=utf-8"
         elif parsed.path == "/browser":
             body = _browser_json(upload)
@@ -214,12 +223,21 @@ def _viewer_html(token: str, workspace_id: str = "") -> str:
     <div class="head-right"><span class="ot-pill ot-pill--dark">IFC model workspace</span><span id="status" role="status">Starting viewer…</span></div>
   </header>
   <div class="workspace-main">
-    <aside class="failures ot-dark-card" aria-label="Failed elements">
-      <div class="panel-head"><span class="ot-eyebrow">Validation results</span><h2>Failed elements <span id="failure-count" class="count-pill">0</span></h2><p>Select an IFC class to filter the failures, or choose an element to inspect it.</p></div>
+    <aside class="failures ot-dark-card" aria-label="Validation results">
+      <div class="panel-head"><span class="ot-eyebrow">Validation results</span><h2>Model elements</h2><p>Choose an element to inspect its failed and passed IDS checks.</p></div>
+      <div class="result-tabs" role="tablist" aria-label="Validation result type"><button id="show-failures" role="tab" type="button" aria-selected="true" aria-controls="failed-pane">Failed <span id="failure-count" class="count-pill">0</span></button><button id="show-passes" role="tab" type="button" aria-selected="false" aria-controls="passed-pane">Passed <span id="pass-count" class="count-pill">0</span></button></div>
+      <section id="failed-pane" class="results-pane" role="tabpanel" aria-label="Failed elements">
       <section class="chart-panel" aria-label="Errors by IFC class"><div class="chart-heading"><strong>Errors by IFC class</strong><span>Validation issues</span></div><div id="class-chart" class="class-chart"></div></section>
       <label class="search-field"><svg class="ot-icon"><use href="/icons.svg?token={token}#search"/></svg><input id="failure-search" type="search" placeholder="Search failures" aria-label="Search failed elements"></label>
       <div id="failure-list" class="failure-list" role="list"></div>
       <button id="more-failures" class="more-button" type="button" hidden>Show more</button>
+      </section>
+      <section id="passed-pane" class="results-pane" role="tabpanel" aria-label="Passed elements" hidden>
+      <p class="pass-intro">Each element met at least one IDS requirement. Some also have failed checks.</p>
+      <label class="search-field"><svg class="ot-icon"><use href="/icons.svg?token={token}#search"/></svg><input id="pass-search" type="search" placeholder="Search passed elements" aria-label="Search passed elements"></label>
+      <div id="pass-list" class="failure-list" role="list"></div>
+      <button id="more-passes" class="more-button" type="button" hidden>Show more</button>
+      </section>
     </aside>
     <section class="viewer ot-dark-card" aria-label="IFC 3D viewer">
       <div class="viewer-head"><div><span class="ot-eyebrow">Model view</span><h2 id="view-title">Building overview</h2></div><div class="viewer-actions"><button id="pick-element" class="view-button" type="button" aria-pressed="true">Select in 3D</button><button id="isolate-selected" class="view-button" type="button" aria-pressed="false" disabled>Isolate selected</button><button id="clear-selection" class="view-button" type="button" disabled>Clear selection</button><button id="reset-view" class="view-button" type="button" disabled>Fit building</button><button id="show-properties" class="view-button" type="button">Properties</button><button id="show-browser" class="view-button" type="button">Model browser</button></div></div>
@@ -252,13 +270,13 @@ def _get_server() -> ViewerServer:
         return _SERVER
 
 
-def show_building(ifc_data: bytes, issues: list[dict], fingerprint: str, workspace_id: str = "") -> None:
+def show_building(ifc_data: bytes, issues: list[dict], passes: list[dict], fingerprint: str, workspace_id: str = "") -> None:
     """Display the whole IFC model without putting its bytes in Streamlit messages."""
     server = _get_server()
     if st.session_state.get("viewer_fingerprint") != fingerprint:
         st.session_state["viewer_token"] = secrets.token_urlsafe(32)
         st.session_state["viewer_fingerprint"] = fingerprint
     token = st.session_state["viewer_token"]
-    server.publish(token, ifc_data, issues, workspace_id)
+    server.publish(token, ifc_data, issues, passes, workspace_id)
     url = f"http://127.0.0.1:{server.server_port}/?token={token}"
     components.iframe(url, height=1040, scrolling=False)

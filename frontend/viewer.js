@@ -7,9 +7,12 @@ const status = byId("status");
 const canvas = byId("canvas");
 const failureList = byId("failure-list");
 const failureSearch = byId("failure-search");
+const passList = byId("pass-list");
+const passSearch = byId("pass-search");
 const classChart = byId("class-chart");
 const selectedIssues = byId("selected-issues");
 const moreFailures = byId("more-failures");
+const morePasses = byId("more-passes");
 const inspector = byId("inspector");
 const propertiesPanel = byId("properties-panel");
 const relationshipPanel = byId("relationship-panel");
@@ -19,8 +22,13 @@ const relationshipLines = byId("relationship-lines");
 const relationshipSearchResults = byId("relationship-search-results");
 const viewStorageKey = window.viewerWorkspaceId ? `ids-checker-view-${window.viewerWorkspaceId}` : "";
 let issues = [];
+let passes = [];
 let failureGroups = [];
+let passGroups = [];
+let passedElementGroups = [];
 let shownFailures = 80;
+let shownPasses = 80;
+let activeResults = "failed";
 let model;
 let world;
 let fragments;
@@ -83,6 +91,29 @@ function buildFailureGroups() {
   renderFailures();
 }
 
+function buildPassGroups() {
+  const groups = new Map();
+  for (const check of passes) {
+    if (!check.globalId) continue;
+    if (!groups.has(check.globalId)) groups.set(check.globalId, { key: check.globalId, ...check, checks: [] });
+    groups.get(check.globalId).checks.push(check);
+  }
+  passGroups = [...groups.values()];
+  const failed = new Map(failureGroups.filter((group) => group.globalId).map((group) => [group.globalId, group.checks.length]));
+  passedElementGroups = passGroups.map((group) => ({ ...group, failedChecks: failed.get(group.globalId) || 0 }));
+  byId("pass-count").textContent = passedElementGroups.length.toLocaleString();
+  renderPasses();
+}
+
+function setResultsPanel(panel) {
+  activeResults = panel === "passed" ? "passed" : "failed";
+  byId("failed-pane").hidden = activeResults !== "failed";
+  byId("passed-pane").hidden = activeResults !== "passed";
+  byId("show-failures").setAttribute("aria-selected", String(activeResults === "failed"));
+  byId("show-passes").setAttribute("aria-selected", String(activeResults === "passed"));
+  rememberView();
+}
+
 function rememberView() {
   if (!viewStorageKey) return;
   try {
@@ -94,6 +125,8 @@ function rememberView() {
       pickEnabled,
       browserOpen,
       search: failureSearch.value,
+      passSearch: passSearch.value,
+      activeResults,
     }));
   } catch (_) { /* Private browsing may disable session storage. */ }
 }
@@ -113,12 +146,15 @@ function restoreView() {
       selectedClass = "";
     }
     selectedName = failureGroups.find((group) => group.globalId === selectedGuid)?.element || "";
-    isolateSelected = !!(selectedGuid && state.isolateSelected);
+    isolateSelected = !!((selectedGuid || selectedClass || selectedRelationshipGroup) && state.isolateSelected);
     pickEnabled = state.pickEnabled !== false;
     updatePickControl();
     failureSearch.value = typeof state.search === "string" ? state.search : "";
+    passSearch.value = typeof state.passSearch === "string" ? state.passSearch : "";
+    setResultsPanel(state.activeResults);
     renderChart();
     renderFailures();
+    renderPasses();
     renderSelectedIssues();
     updateSelectionControls();
     if (selectedGuid) showProperties(selectedGuid, ++selectionVersion);
@@ -154,26 +190,34 @@ function renderChart() {
 }
 
 function renderSelectedIssues() {
-  const group = selectedRequirementGroup || failureGroups.find((item) => item.globalId && item.globalId === selectedGuid);
-  if (!selectedGuid && !group) {
+  const failure = selectedRequirementGroup || failureGroups.find((item) => item.globalId && item.globalId === selectedGuid);
+  const passed = passGroups.find((item) => item.globalId === selectedGuid);
+  if (!selectedGuid && !failure) {
     selectedIssues.hidden = true;
     selectedIssues.replaceChildren();
     return;
   }
   selectedIssues.hidden = false;
   selectedIssues.replaceChildren();
-  selectedIssues.append(node("span", "ot-eyebrow", group?.globalId || selectedGuid ? "Selected model element" : "Validation requirement"));
-  selectedIssues.append(node("h3", "", selectedName || group?.element || group?.specification || "Selected element"));
-  selectedIssues.append(node("p", "selected-issues__meta", group?.checks.length
-    ? `${group.checks.length} ${group.checks.length === 1 ? "issue" : "issues"} · ${group.ifcClass || "IDS requirement"}`
-    : `No IDS errors recorded${selectedGuid ? ` · ${selectedGuid}` : ""}`));
-  if (group?.checks.length) {
+  selectedIssues.append(node("span", "ot-eyebrow", failure?.globalId || selectedGuid ? "Selected model element" : "Validation requirement"));
+  selectedIssues.append(node("h3", "", selectedName || failure?.element || passed?.element || failure?.specification || "Selected element"));
+  const counts = [];
+  if (failure?.checks.length) counts.push(`${failure.checks.length} ${failure.checks.length === 1 ? "issue" : "issues"}`);
+  if (passed?.checks.length) counts.push(`${passed.checks.length} passed ${passed.checks.length === 1 ? "check" : "checks"}`);
+  selectedIssues.append(node("p", "selected-issues__meta", counts.length
+    ? `${counts.join(" · ")} · ${failure?.ifcClass || passed?.ifcClass || "IDS requirement"}`
+    : `No IDS checks recorded${selectedGuid ? ` · ${selectedGuid}` : ""}`));
+  if (failure?.checks.length) {
     const list = node("div", "selected-issues__list");
-    addIssueCallouts(list, group.checks);
+    addIssueCallouts(list, failure.checks);
     selectedIssues.append(list);
-  } else {
-    selectedIssues.append(node("p", "selected-issues__empty", "This element has no recorded validation failures. Its IFC properties are available in the viewer."));
   }
+  if (passed?.checks.length) {
+    const list = node("div", "selected-issues__list");
+    addPassCallouts(list, passed.checks);
+    selectedIssues.append(list);
+  }
+  if (!counts.length) selectedIssues.append(node("p", "selected-issues__empty", "This element has no recorded IDS checks. Its IFC properties are available in the viewer."));
 }
 
 function updatePickControl() {
@@ -217,6 +261,36 @@ function renderFailures() {
   moreFailures.textContent = `Show more (${Math.min(80, filtered.length - shownFailures).toLocaleString()} of ${(filtered.length - shownFailures).toLocaleString()} remaining)`;
 }
 
+function renderPasses() {
+  const query = passSearch.value.trim().toLocaleLowerCase();
+  const filtered = passedElementGroups.filter((group) => !query || [group.element, group.ifcClass, group.globalId, ...group.checks.map((check) => `${check.requirement} ${check.reason} ${check.idsFile}`)].join(" ").toLocaleLowerCase().includes(query));
+  const selectedIndex = filtered.findIndex((group) => group.globalId === selectedGuid);
+  const displayed = filtered.slice(0, shownPasses);
+  if (selectedIndex >= shownPasses) displayed.unshift(filtered[selectedIndex]);
+  passList.replaceChildren();
+  if (!filtered.length) passList.append(node("p", "empty-note", query ? "No passed elements match your search." : "No passed element-level checks were reported."));
+  for (const group of displayed) {
+    const item = node("div");
+    item.setAttribute("role", "listitem");
+    const button = node("button", "failure-card pass-card");
+    button.type = "button";
+    button.setAttribute("aria-current", String(group.globalId === selectedGuid));
+    const top = node("span", "failure-card__top");
+    top.append(node("span", "failure-card__name", group.element || "Unnamed element"));
+    top.append(node("span", "failure-card__badge", `${group.checks.length} ${group.checks.length === 1 ? "check" : "checks"}`));
+    button.append(top);
+    button.append(node("span", "failure-card__class", group.ifcClass));
+    button.append(node("span", "failure-card__reason", group.checks[0]?.reason || ""));
+    if (group.failedChecks) button.append(node("span", "pass-card__caution", `Also has ${group.failedChecks} failed ${group.failedChecks === 1 ? "check" : "checks"}`));
+    button.append(node("span", "failure-card__guid", group.globalId));
+    button.addEventListener("click", () => selectGuid(group.globalId, { panel: "passed" }).catch((error) => setStatus(error.message, true)));
+    item.append(button);
+    passList.append(item);
+  }
+  morePasses.hidden = filtered.length <= shownPasses;
+  morePasses.textContent = `Show more (${Math.min(80, filtered.length - shownPasses).toLocaleString()} of ${(filtered.length - shownPasses).toLocaleString()} remaining)`;
+}
+
 function showInspector() {
   inspector.hidden = false;
   byId("show-properties").setAttribute("aria-pressed", "true");
@@ -248,6 +322,16 @@ function addIssueCallouts(target, checks) {
     const callout = node("div", "issue-callout");
     callout.append(node("strong", "", check.requirement || "Failed requirement"));
     callout.append(node("div", "", check.reason || "Validation failed"));
+    callout.append(node("small", "", `${check.idsFile || ""}${check.specification ? ` · ${check.specification}` : ""}`));
+    target.append(callout);
+  }
+}
+
+function addPassCallouts(target, checks) {
+  for (const check of checks) {
+    const callout = node("div", "issue-callout pass-callout");
+    callout.append(node("strong", "", check.requirement || "Passed requirement"));
+    callout.append(node("div", "", check.reason || "Requirement met"));
     callout.append(node("small", "", `${check.idsFile || ""}${check.specification ? ` · ${check.specification}` : ""}`));
     target.append(callout);
   }
@@ -309,11 +393,12 @@ async function frameBox(box) {
 }
 
 function updateSelectionControls() {
-  byId("isolate-selected").disabled = !selectedGuid;
-  byId("isolate-selected").setAttribute("aria-pressed", String(isolateSelected && !!selectedGuid));
+  const hasSelection = !!(selectedGuid || selectedClass || selectedRelationshipGroup);
+  byId("isolate-selected").disabled = !hasSelection;
+  byId("isolate-selected").setAttribute("aria-pressed", String(isolateSelected && hasSelection));
   byId("clear-selection").disabled = !selectedGuid && !selectedClass && !selectedRequirementGroup && !selectedRelationshipGroup;
   byId("view-title").textContent = selectedGuid
-    ? (selectedName || failureGroups.find((group) => group.globalId === selectedGuid)?.element || "Selected element")
+    ? (selectedName || failureGroups.find((group) => group.globalId === selectedGuid)?.element || passGroups.find((group) => group.globalId === selectedGuid)?.element || "Selected element")
     : selectedRelationshipGroup ? `${selectedRelationshipGroup.label} · ${selectedRelationshipGroup.guids.length.toLocaleString()} elements`
       : selectedClass ? `${selectedClass} failures` : "Building overview";
 }
@@ -351,8 +436,8 @@ async function applyVisualState(revision, frame) {
   const elementIds = id == null ? [] : [id];
   if (revision !== visualRevision) return;
   const nextColored = elementIds.length ? elementIds : groupIds.length ? groupIds : classIds;
-  const nextOpaque = isolate && elementIds.length ? elementIds : groupIds.length ? groupIds : classIds;
-  const nextGhost = !!((isolate && elementIds.length) || (ifcClass && classIds.length) || (relationshipGroup && groupIds.length));
+  const nextOpaque = isolate ? nextColored : [];
+  const nextGhost = !!(isolate && nextOpaque.length);
 
   if (!sameIds(coloredIds, nextColored)) {
     if (coloredIds.length) await model.resetColor(coloredIds);
@@ -380,10 +465,11 @@ async function applyVisualState(revision, frame) {
   if (revision !== visualRevision) return;
   if (guid && !elementIds.length) setStatus("This element has no viewable geometry. Its IFC properties are shown.");
   else if (relationshipGroup && !groupIds.length) setStatus(`${relationshipGroup.label} contains no viewable model elements.`);
-  else if (relationshipGroup) setStatus(`${groupIds.length.toLocaleString()} elements in ${relationshipGroup.label} highlighted; other elements are transparent.`);
-  else if (guid && !failureGroups.some((group) => group.globalId === guid)) setStatus("Selected element has no recorded IDS errors.");
+  else if (relationshipGroup) setStatus(`${groupIds.length.toLocaleString()} elements in ${relationshipGroup.label} highlighted${isolate ? "; other elements are transparent" : ""}.`);
+  else if (guid && !failureGroups.some((group) => group.globalId === guid) && passGroups.some((group) => group.globalId === guid)) setStatus("Selected element passed its recorded IDS checks.");
+  else if (guid && !failureGroups.some((group) => group.globalId === guid)) setStatus("Selected element has no recorded IDS checks.");
   else if (guid && isolate) setStatus("Selected element is opaque; other elements are transparent.");
-  else if (ifcClass) setStatus(`${ifcClass} failures are highlighted; other elements are transparent.`);
+  else if (ifcClass) setStatus(`${ifcClass} failures are highlighted${isolate ? "; other elements are transparent" : ""}.`);
   else if (guid) setStatus("Selected element highlighted in lime. Building context remains visible.");
   else setStatus(`Whole building loaded · ${failureGroups.length.toLocaleString()} failed elements`);
 }
@@ -414,12 +500,13 @@ function refreshVisuals(frame = true) {
 }
 
 async function selectClass(ifcClass) {
+  const hadSelection = !!(selectedGuid || selectedClass || selectedRelationshipGroup);
   selectedClass = selectedClass === ifcClass ? "" : ifcClass;
   selectedRelationshipGroup = null;
   selectedGuid = "";
   selectedName = "";
   selectedRequirementGroup = null;
-  isolateSelected = false;
+  isolateSelected = selectedClass ? (hadSelection ? isolateSelected : true) : false;
   selectionVersion += 1;
   clearProperties();
   shownFailures = 80;
@@ -452,8 +539,9 @@ async function clearSelection() {
 }
 
 async function selectGuid(guid, options = {}) {
-  const { fromModel = false, frame = true } = options;
+  const { fromModel = false, frame = true, panel = null } = options;
   const group = failureGroups.find((item) => item.globalId && item.globalId === guid);
+  const passed = passGroups.find((item) => item.globalId === guid);
   if (fromModel && group && failureSearch.value) failureSearch.value = "";
   if (group && selectedClass && selectedClass !== group.ifcClass) {
     selectedClass = "";
@@ -461,17 +549,21 @@ async function selectGuid(guid, options = {}) {
   }
   selectedGuid = guid;
   selectedRelationshipGroup = null;
-  selectedName = group?.element || "";
+  selectedName = group?.element || passed?.element || "";
   selectedRequirementGroup = null;
   if (treeIndex) syncRelationshipToGuid(guid);
   selectionVersion += 1;
   const version = selectionVersion;
   renderFailures();
+  renderPasses();
   renderSelectedIssues();
+  if (panel) setResultsPanel(panel);
+  else if (fromModel || (activeResults === "failed" && passed && !group) || (activeResults === "passed" && group && !passed)) setResultsPanel(group ? "failed" : passed ? "passed" : "failed");
   updateSelectionControls();
   rememberView();
   showProperties(guid, version);
   if (fromModel && group) failureList.querySelector('.failure-card[aria-current="true"]')?.scrollIntoView({ block: "nearest" });
+  if (fromModel && passed && !group) passList.querySelector('.pass-card[aria-current="true"]')?.scrollIntoView({ block: "nearest" });
   if (!model) {
     setStatus("Loading model before locating the selected element…");
     return;
@@ -570,6 +662,7 @@ function relationshipGroupForTile(stage, key, label) {
 }
 
 async function selectRelationshipTile(stage, item) {
+  const hadSelection = !!(selectedGuid || selectedClass || selectedRelationshipGroup);
   const scope = relationshipSelection.slice(0, 4).reverse().find(Boolean) || "";
   const sameGroup = selectedRelationshipGroup?.stage === stage && selectedRelationshipGroup.key === item.key
     && (stage !== 4 || selectedRelationshipGroup.scope === scope);
@@ -586,7 +679,7 @@ async function selectRelationshipTile(stage, item) {
   selectedGuid = "";
   selectedName = "";
   selectedRequirementGroup = null;
-  isolateSelected = false;
+  isolateSelected = hadSelection ? isolateSelected : true;
   selectionVersion += 1;
   clearProperties();
   renderChart();
@@ -762,9 +855,13 @@ function setBrowserOpen(open) {
 function wireControls() {
   failureSearch.addEventListener("input", () => { shownFailures = 80; renderFailures(); rememberView(); });
   moreFailures.addEventListener("click", () => { shownFailures += 80; renderFailures(); });
+  passSearch.addEventListener("input", () => { shownPasses = 80; renderPasses(); rememberView(); });
+  morePasses.addEventListener("click", () => { shownPasses += 80; renderPasses(); });
+  byId("show-failures").addEventListener("click", () => setResultsPanel("failed"));
+  byId("show-passes").addEventListener("click", () => setResultsPanel("passed"));
   byId("pick-element").addEventListener("click", () => { pickEnabled = !pickEnabled; updatePickControl(); rememberView(); });
   byId("isolate-selected").addEventListener("click", () => {
-    if (!selectedGuid) return;
+    if (!selectedGuid && !selectedClass && !selectedRelationshipGroup) return;
     isolateSelected = !isolateSelected;
     updateSelectionControls();
     rememberView();
@@ -784,8 +881,9 @@ async function start() {
   wireControls();
   updatePickControl();
   setStatus("Preparing IFC model…");
-  issues = await getJson("/issues");
+  [issues, passes] = await Promise.all([getJson("/issues"), getJson("/passes")]);
   buildFailureGroups();
+  buildPassGroups();
   restoreView();
   const response = await fetch(`/model?token=${token}`);
   if (!response.ok) throw new Error("The IFC model could not be retrieved from the local viewer service.");

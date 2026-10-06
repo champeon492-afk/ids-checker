@@ -17,13 +17,15 @@ class ViewerServerTests(unittest.TestCase):
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            server.publish("test-token", b"IFC model bytes", [])
+            server.publish("test-token", b"IFC model bytes", [], [{"GlobalId": "abc", "IDS file": "x.ids", "Specification": "Test", "IFC class": "IfcWall", "Element": "Wall", "Requirement": "FireRating", "Reason": "Value meets IDS rule"}])
             url = f"http://127.0.0.1:{server.server_port}"
             with urlopen(f"{url}/model?token=test-token") as response:
                 self.assertEqual(response.read(), b"IFC model bytes")
                 self.assertEqual(response.headers["Content-Type"], "application/octet-stream")
             with urlopen(f"{url}/issues?token=test-token") as response:
                 self.assertEqual(response.read(), b"[]")
+            with urlopen(f"{url}/passes?token=test-token") as response:
+                self.assertEqual(json.load(response)[0]["reason"], "Value meets IDS rule")
             with self.assertRaises(HTTPError) as missing:
                 urlopen(f"{url}/model?token=wrong-token")
             self.assertEqual(missing.exception.code, 404)

@@ -39,7 +39,9 @@ def _read_project(data: bytes) -> dict:
                 report = json.loads(archive.read(f"results/{index:03d}.json"))
                 html = archive.read(f"results/{index:03d}.html")
                 issues = json.loads(archive.read(f"results/{index:03d}-issues.json"))
-                results.append({"ids_file": _safe_name(name), "report": report, "html": html, "issues": issues})
+                passes_path = f"results/{index:03d}-passes.json"
+                passes = json.loads(archive.read(passes_path)) if passes_path in archive.namelist() else None
+                results.append({"ids_file": _safe_name(name), "report": report, "html": html, "issues": issues, "passes": passes})
             if not ids_files or not ifc_data or len(results) != len(ids_files):
                 raise ValueError("The project file is incomplete.")
             return {
@@ -74,6 +76,8 @@ def create_project(ids_files: list[tuple[str, bytes]], ifc_filename: str, ifc_da
             archive.writestr(f"results/{index:03d}.json", json.dumps(item["report"], ensure_ascii=False, default=str))
             archive.writestr(f"results/{index:03d}.html", item["html"])
             archive.writestr(f"results/{index:03d}-issues.json", json.dumps(item["issues"], ensure_ascii=False))
+            if item.get("passes") is not None:
+                archive.writestr(f"results/{index:03d}-passes.json", json.dumps(item["passes"], ensure_ascii=False))
     return stream.getvalue()
 
 

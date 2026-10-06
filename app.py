@@ -10,7 +10,7 @@ from pathlib import Path
 import streamlit as st
 
 from building_viewer import show_building
-from validator import csv_bytes, json_bytes, parse_ids_preview, run_validations
+from validator import csv_bytes, json_bytes, parse_ids_preview, pass_rows, run_validations
 from workspace_store import create_project, load_project, project_path, save_project
 
 
@@ -114,6 +114,9 @@ if project is None and "validation" not in st.session_state:
 
 results = project["results"] if project is not None else st.session_state["validation"]
 issues = [row for item in results for row in item["issues"]]
+passed_checks = [row for item in results for row in (item.get("passes") if item.get("passes") is not None else pass_rows(item["report"], item["ids_file"]))]
+failed_guids = {row["GlobalId"] for row in issues if row["GlobalId"]}
+passed_elements = {row["GlobalId"] for row in passed_checks if row["GlobalId"]}
 reports = [item["report"] for item in results]
 st.subheader("Validation results")
 if all(report.get("status") for report in reports):
@@ -128,16 +131,22 @@ cols[2].metric("Checks passed", sum(report.get("total_checks_pass", 0) for repor
 cols[3].metric("Checks failed", sum(report.get("total_checks_fail", 0) for report in reports))
 cols[4].metric("Issues listed", len(issues))
 
-tabs = st.tabs(["Building viewer", "Issues", "By IDS file", "Downloads"])
+tabs = st.tabs(["Building viewer", "Issues", "Passed elements", "By IDS file", "Downloads"])
 with tabs[0]:
-    st.caption("Choose a failed element or click one in the 3D model. Its issues appear inside the viewer. Model browser opens the IFC relationship view below; selecting a tile highlights its elements.")
-    show_building(ifc_data, issues, fingerprint, workspace_id)
+    st.caption("Review failed or passed elements beside the 3D model. Select an element to see its IDS checks. Model browser opens the IFC relationship view below.")
+    show_building(ifc_data, issues, passed_checks, fingerprint, workspace_id)
 with tabs[1]:
     if issues:
         st.dataframe(issues, width="stretch", hide_index=True)
     else:
         st.info("No element-level issues were reported.")
 with tabs[2]:
+    st.caption("Each row explains an IDS requirement this element met. An element may also have failed other requirements.")
+    if passed_elements:
+        st.dataframe([{"Element status": "Also has failures" if row["GlobalId"] in failed_guids else "All checks passed", **row} for row in passed_checks if row["GlobalId"] in passed_elements], width="stretch", hide_index=True)
+    else:
+        st.info("No passed element-level checks were reported.")
+with tabs[3]:
     for item in results:
         report = item["report"]
         status = "Pass" if report.get("status") else "Fail"
@@ -150,7 +159,7 @@ with tabs[2]:
                 for requirement in spec.get("requirements", []):
                     mark = "✅" if requirement.get("status") else "❌"
                     st.write(f"{mark} {requirement.get('description') or requirement.get('label', 'Requirement')} — {requirement.get('total_pass', 0)} passed, {requirement.get('total_fail', 0)} failed")
-with tabs[3]:
+with tabs[4]:
     if workspace_id:
         st.download_button(
             "Save complete project (.idscheck)",

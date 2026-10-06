@@ -4,7 +4,7 @@ import ifcopenshell.api.project
 import ifcopenshell.api.pset
 import ifcopenshell.api.root
 
-from validator import csv_bytes, issue_rows, parse_ids_preview
+from validator import csv_bytes, issue_rows, parse_ids_preview, run_validations
 
 
 IDS_SAMPLE = b'''<?xml version="1.0" encoding="utf-8"?>
@@ -64,6 +64,20 @@ class ValidatorTests(unittest.TestCase):
         property_entity = model.createIfcPropertySingleValue(Name="FireRating", NominalValue=None)
         pset.HasProperties = [property_entity]
         self.assertIn("exists but has no value", issue_rows(report, model=model)[0]["Reason"])
+
+    def test_passed_element_explains_actual_ifc_value_and_ids_rule(self):
+        model = ifcopenshell.api.project.create_file()
+        ifcopenshell.api.root.create_entity(model, ifc_class="IfcProject", name="Project")
+        wall = ifcopenshell.api.root.create_entity(model, ifc_class="IfcWall", name="Passing wall")
+        pset = ifcopenshell.api.pset.add_pset(model, product=wall, name="Pset_WallCommon")
+        ifcopenshell.api.pset.edit_pset(model, pset=pset, properties={"FireRating": "2h"})
+        valid_ids = IDS_SAMPLE.replace(b"<ids:specifications>", b"<ids:info><ids:title>Test</ids:title></ids:info><ids:specifications>")
+        result = run_validations([("walls.ids", valid_ids)], model.to_string().encode())[0]
+        self.assertEqual(result["issues"], [])
+        self.assertEqual(len(result["passes"]), 1)
+        self.assertEqual(result["passes"][0]["GlobalId"], wall.GlobalId)
+        self.assertIn("Pset_WallCommon.FireRating = 2h", result["passes"][0]["Reason"])
+        self.assertIn("FireRating data shall be provided", result["passes"][0]["Reason"])
 
 
 if __name__ == "__main__":

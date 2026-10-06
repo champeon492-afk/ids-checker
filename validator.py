@@ -135,7 +135,7 @@ def run_validations(ids_files: list[tuple[str, bytes]], ifc_data: bytes) -> list
                 html_report.to_file(str(html_path))
             except Exception as exc:
                 raise ValueError(f"{filename}: {exc}") from exc
-            results.append({"ids_file": filename, "report": result, "html": html_path.read_bytes(), "issues": issue_rows(result, filename, model)})
+            results.append({"ids_file": filename, "report": result, "html": html_path.read_bytes(), "issues": issue_rows(result, filename, model), "passes": pass_rows(result, filename, model)})
         return results
 
 
@@ -216,6 +216,59 @@ def issue_rows(result: dict, ids_file: str = "", model=None) -> list[dict[str, s
                 )
         if spec.get("total_applicable", 0) == 0 and not spec.get("status"):
             rows.append({"IDS file": ids_file, "Specification": spec.get("name", ""), "Requirement": "Applicable elements", "IFC class": "", "GlobalId": "", "Element": "", "Reason": "No matching IFC elements were found for a required specification."})
+    return rows
+
+
+def _pass_reason(requirement: dict, entity: dict, model=None) -> str:
+    """Explain a successful facet using its IDS rule and the IFC value when available."""
+    description = requirement.get("description") or requirement.get("label") or "IDS information requirement"
+    metadata = requirement.get("metadata") or {}
+    facet = (requirement.get("facet_type") or "").lower()
+    if facet == "property":
+        pset = _ids_value(metadata.get("propertySet"))
+        prop = _ids_value(metadata.get("baseName"))
+        target = ".".join(part for part in (pset, prop) if part)
+        if model is not None and pset and prop and entity.get("global_id"):
+            try:
+                import ifcopenshell.util.element
+
+                element = model.by_guid(entity["global_id"])
+                properties = ifcopenshell.util.element.get_psets(element).get(pset, {})
+                if prop in properties and properties[prop] is not None:
+                    value = str(properties[prop])
+                    if len(value) > 160:
+                        value = value[:157] + "…"
+                    return f"{target} = {value}. Meets IDS requirement: {description}."
+                cardinality = metadata.get("@cardinality", "required")
+                if cardinality == "optional":
+                    return f"{target} is optional and may be absent. Meets IDS requirement: {description}."
+                if cardinality == "prohibited":
+                    return f"{target} is absent as required. Meets IDS requirement: {description}."
+            except (RuntimeError, KeyError, TypeError):
+                pass
+    return f"Meets IDS requirement: {description}."
+
+
+def pass_rows(result: dict, ids_file: str = "", model=None) -> list[dict[str, str]]:
+    """One successful IDS check per applicable IFC element and requirement."""
+    rows: list[dict[str, str]] = []
+    for spec in result.get("specifications", []):
+        if spec.get("is_skipped") or spec.get("cardinality") == "prohibited":
+            continue
+        for requirement in spec.get("requirements", []):
+            for entity in requirement.get("passed_entities", []):
+                guid = entity.get("global_id") or entity.get("GlobalId") or ""
+                if not guid:
+                    continue
+                rows.append({
+                    "IDS file": ids_file,
+                    "Specification": spec.get("name", ""),
+                    "Requirement": requirement.get("description") or requirement.get("label", ""),
+                    "IFC class": entity.get("class") or entity.get("type") or "",
+                    "GlobalId": guid,
+                    "Element": entity.get("name") or "",
+                    "Reason": _pass_reason(requirement, entity, model),
+                })
     return rows
 
 
