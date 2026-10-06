@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-STORE = Path(__file__).parent / "local_workspaces"
+STORE = Path(os.environ.get("IDS_CHECKER_DATA_DIR", Path(__file__).parent / "local_workspaces"))
 FORMAT_VERSION = 1
 
 

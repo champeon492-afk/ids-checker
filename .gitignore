@@ -12,3 +12,4 @@ frontend/node_modules/
 local_workspaces/
 *.idscheck
 !.streamlit/config.toml
+dist/
