@@ -18,3 +18,9 @@
 - Uses Streamlit's supported iframe interface for the 3D viewer.
 
 The Windows installer includes the app and its Python runtime. Download `IDS-Checker-Setup.exe`, run it, and open the **IDS Checker** shortcut to launch the browser interface.
+## IDS Checker 2.2.0
+
+- Added an **MMI overview** to the federated IFC viewer. It reads each model object's declared `ProcessStatus`, groups objects by the MMI levels in the supplied reference, and colors or highlights the matching objects in 3D.
+- Filter the overview by model, IFC zone, storey, and IFC class. Select a level or a specific object to inspect its IFC properties and recorded IDS checks.
+- Objects without a usable status remain visible under **MMI not assigned**, with separate counts for a missing property set, missing property, and blank value. Unknown values have their own review group.
+- The overview and its filters are restored when the viewer page reloads. The assigned percentage describes data coverage, not project completion.

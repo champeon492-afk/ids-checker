@@ -36,8 +36,8 @@ The source version stores automatic project copies in `local_workspaces/` beside
 4. **Run all checks.** Select **Run all checks**. IfcTester finds elements matching each IDS specification's applicability rules and evaluates its requirements. A required specification with no matching elements can itself fail. The app saves the full project locally after the run.
 5. **Read the summary.** The top metrics count IFC models, IDS files, specifications, passed checks, failed checks, and listed issues. The viewer's results panel counts distinct failed and passed elements **within the selected model**; see [Understanding the counts](#understanding-the-counts).
 6. **Investigate failures.** Open **Federated viewer**. In **Models**, choose which IFC's results to inspect and turn each IFC on or off in 3D. Choose an IFC class in **Errors by IFC class** to filter and highlight failures in the active model. Choose an element card to frame it in 3D. The issue panel explains the IDS rule and its specific failure, such as a missing property set, property, or value.
-6. **Inspect the IFC data.** Turn on **Properties** to see IFC attributes, type, property sets, and quantities for the selected element. Turn on **Model browser** to navigate the IFC relationship from project through site, building, storey, class, and element. Select a relationship tile to highlight the elements it contains, or choose a single element. The validation list follows a selected element when it has recorded checks.
-7. **Review passes and export.** Switch the viewer's **Passed elements** tab to see successful checks for the selected model. The top **Issues** and **Passed elements** tables include the check and IFC model name. Use **Downloads** to save results or the complete multi-model project.
+7. **Inspect the IFC data.** Turn on **Properties** to see IFC attributes, type, property sets, and quantities for the selected element. Turn on **Model browser** to navigate the IFC relationship from project through site, building, storey, class, and element. Select a relationship tile to highlight the elements it contains, or choose a single element. The validation list follows a selected element when it has recorded checks.
+8. **Review MMI and export.** In the viewer, open **MMI overview** to group model objects by their declared `ProcessStatus` value. Use the filters and level bars to inspect a status group in 3D. Switch back to **Validation results** for IDS issues. The top **Issues** and **Passed elements** tables include the check and IFC model name. Use **Downloads** to save results or the complete multi-model project.
 
 ### Worked example
 
@@ -91,6 +91,17 @@ An element can appear in **both** element lists when it passes one IDS requireme
 - Use **Clear selection** to remove the active element or group selection, and **Fit federation** to frame all visible models.
 - Open **Properties** for the selected object's IFC attributes, type, property sets, and quantities. Elements without viewable geometry can still have readable properties and validation results.
 - Open **Model browser** below the workspace. Connected columns show project → site → building → storey → IFC class → element. A tile can highlight its entire contained group; an element tile selects that individual object. Use the browser's search field to find an element by name, IFC class, or `GlobalId`.
+
+### MMI overview
+
+The viewer's **MMI overview** reads each IFC object's `ProcessStatus` property. This is the model's **declared** MMI level: IDS Checker does not infer a level from geometry or certify that the work at that level is complete. It follows the MMI level names and primary/secondary colors in the supplied MMI reference.
+
+1. Choose **MMI overview** above the viewer. The summary shows total IFC objects in scope, the number and share with a recognized MMI value, objects without an assigned value, and values that need review. The percentage is the **share of objects with an assigned MMI value**, not project progress or IDS pass rate.
+2. Filter by **IFC model**, **zone**, **storey**, or **IFC class**. With **All models · federated**, each model uses its own selected ProcessStatus source. For a single model, choose the property set containing `ProcessStatus`; `NONS_Process` is selected first when present.
+3. Select an MMI level bar to filter the object list and highlight that group across the federation. Other objects become transparent. Choose an object in the list to frame that specific element in 3D and inspect its IFC properties and any recorded IDS failures or passes. Use **Clear selection** to return to the whole filtered scope. **MMI colors on/off** controls status colors in the viewer.
+4. Select **MMI not assigned** to find objects whose chosen property set is missing, whose `ProcessStatus` property is missing, or whose value is blank. The missing reason appears in the list and in the three reason counts. **Unrecognized value** contains nonblank codes outside the supported MMI level table; these remain visible for review rather than being treated as a valid level.
+
+The overview counts `IfcElement` objects except `IfcFeatureElement`, including objects without visible geometry. IFC zones are shown only when the model contains explicit `IfcZone` relationships; otherwise the filter shows **No IFC zone**. Storeys come from IFC spatial containment. MMI selection and filters stay linked to the current browser session when the viewer reloads.
 
 ### Save, resume, and share
 

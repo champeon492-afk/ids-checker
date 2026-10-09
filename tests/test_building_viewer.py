@@ -96,3 +96,31 @@ class ViewerServerTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
+
+    def test_mmi_endpoint_reports_status_sources_and_missing_property_states(self):
+        model = ifcopenshell.api.project.create_file()
+        assigned = ifcopenshell.api.root.create_entity(model, ifc_class="IfcWall", name="Assigned wall")
+        empty = ifcopenshell.api.root.create_entity(model, ifc_class="IfcWall", name="Blank wall")
+        no_property = ifcopenshell.api.root.create_entity(model, ifc_class="IfcWall", name="No property")
+        no_set = ifcopenshell.api.root.create_entity(model, ifc_class="IfcWall", name="No set")
+        for element in (assigned, empty, no_property):
+            pset = ifcopenshell.api.pset.add_pset(model, product=element, name="NONS_Process")
+            if element is not no_property:
+                ifcopenshell.api.pset.edit_pset(model, pset=pset, properties={"ProcessStatus": "300" if element is assigned else ""})
+        server = ViewerServer()
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            server.publish("mmi-token", model.to_string().encode(), [])
+            url = f"http://127.0.0.1:{server.server_port}"
+            with urlopen(f"{url}/mmi?token=mmi-token") as response:
+                rows = {row["globalId"]: row for row in json.load(response)}
+            self.assertEqual(rows[assigned.GlobalId]["statusSources"]["NONS_Process"], "300")
+            self.assertEqual(rows[empty.GlobalId]["statusSources"]["NONS_Process"], "")
+            self.assertIn("NONS_Process", rows[no_property.GlobalId]["propertySets"])
+            self.assertNotIn("NONS_Process", rows[no_property.GlobalId]["statusSources"])
+            self.assertNotIn("NONS_Process", rows[no_set.GlobalId]["propertySets"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)

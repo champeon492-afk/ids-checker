@@ -7,6 +7,7 @@ import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { OutlinePass } from "three/addons/postprocessing/OutlinePass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
+import { MMI_LEVELS, MMI_EXTRA, MMI_BY_KEY, defaultMmiSource, classifyMmi } from "./mmi.js";
 
 const token = encodeURIComponent(window.viewerToken);
 const byId = (id) => document.getElementById(id);
@@ -91,6 +92,17 @@ const relationshipSelection = ["", "", "", "", "", ""];
 const relationshipPage = [0, 0, 0, 0, 0, 0];
 let relationshipCacheScope = null;
 let relationshipCacheElements = null;
+let workspaceMode = "validation";
+let mmiRecords = null;
+const mmiSourceByModel = new Map();
+let mmiLevel = "all";
+let mmiSelected = null;
+let mmiColors = true;
+let mmiShown = 80;
+let mmiVisualCache = new Map();
+let mmiAppliedColors = new Map();
+let mmiVisualRevision = 0;
+let mmiVisualWork = null;
 
 function setStatus(message, error = false) {
   status.textContent = message;
@@ -109,6 +121,140 @@ function node(tag, className, content) {
   if (className) element.className = className;
   if (content != null) element.textContent = content;
   return element;
+}
+
+function mmiRecord(raw) {
+  const source = mmiSourceByModel.get(raw.checkId) || "NONS_Process";
+  return { ...raw, ...classifyMmi(raw, source) };
+}
+
+function mmiScopedRecords() {
+  if (!mmiRecords) return [];
+  const modelFilter = byId("mmi-model").value;
+  const zone = byId("mmi-zone").value;
+  const storey = byId("mmi-storey").value;
+  const ifcClass = byId("mmi-class").value;
+  return mmiRecords.filter((row) =>
+    (modelFilter === "all" || row.checkId === modelFilter) &&
+    (zone === "all" || (zone === "__none__" ? !row.zones.length : row.zones.includes(zone))) &&
+    (storey === "all" || row.storey === storey) &&
+    (ifcClass === "all" || row.ifcClass === ifcClass)
+  ).map(mmiRecord);
+}
+
+function setSelectOptions(select, entries, defaultLabel) {
+  const previous = select.value;
+  select.replaceChildren(new Option(defaultLabel, "all"));
+  for (const [value, label] of entries) select.add(new Option(label, value));
+  select.value = [...select.options].some((option) => option.value === previous) ? previous : "all";
+}
+
+function renderMmiFilters() {
+  if (!mmiRecords) return;
+  setSelectOptions(byId("mmi-model"), checks.map((check) => [check.id, check.name || check.filename]), "All models · federated");
+  const modelId = byId("mmi-model").value;
+  const sourceSelect = byId("mmi-source");
+  if (modelId === "all") {
+    sourceSelect.replaceChildren(new Option("Per-model source", ""));
+    sourceSelect.disabled = true;
+    byId("mmi-source-note").textContent = "Each IFC model uses its selected ProcessStatus property set.";
+  } else {
+    const modelRows = mmiRecords.filter((row) => row.checkId === modelId);
+    const candidates = new Set([mmiSourceByModel.get(modelId), ...modelRows.flatMap((row) => Object.keys(row.statusSources || {}))]);
+    sourceSelect.replaceChildren(...[...candidates].filter(Boolean).sort().map((name) => new Option(name, name)));
+    sourceSelect.value = mmiSourceByModel.get(modelId);
+    sourceSelect.disabled = false;
+    byId("mmi-source-note").textContent = `Reading ${sourceSelect.value}. Objects without that property set or ProcessStatus are listed as MMI not assigned.`;
+  }
+  const available = mmiRecords.filter((row) => modelId === "all" || row.checkId === modelId);
+  const zones = [...new Set(available.flatMap((row) => row.zones))].sort().map((name) => [name, name]);
+  if (available.some((row) => !row.zones.length)) zones.push(["__none__", "No IFC zone"]);
+  setSelectOptions(byId("mmi-zone"), zones, "All zones");
+  setSelectOptions(byId("mmi-storey"), [...new Set(available.map((row) => row.storey))].sort().map((name) => [name, name]), "All storeys");
+  setSelectOptions(byId("mmi-class"), [...new Set(available.map((row) => row.ifcClass))].sort().map((name) => [name, name]), "All IFC classes");
+}
+
+function renderMmi() {
+  if (!mmiRecords) return;
+  const scope = mmiScopedRecords();
+  const count = (key) => scope.filter((row) => row.key === key).length;
+  const assigned = scope.length - count("missing") - count("invalid");
+  byId("mmi-total").textContent = scope.length.toLocaleString();
+  byId("mmi-assigned").textContent = scope.length ? `${Math.round(assigned / scope.length * 100)}%` : "—";
+  byId("mmi-assigned-detail").textContent = `${assigned.toLocaleString()} of ${scope.length.toLocaleString()} objects`;
+  byId("mmi-missing").textContent = count("missing").toLocaleString();
+  byId("mmi-invalid").textContent = count("invalid").toLocaleString();
+  const levels = MMI_LEVELS.filter((level) => count(level.key)) .concat(MMI_EXTRA);
+  const chart = byId("mmi-levels");
+  chart.replaceChildren();
+  for (const level of levels) {
+    const button = node("button", "mmi-level");
+    button.type = "button";
+    button.style.setProperty("--mmi-color", level.color);
+    button.style.setProperty("--mmi-width", scope.length ? `${count(level.key) / scope.length * 100}%` : "0%");
+    button.setAttribute("aria-pressed", String(mmiLevel === level.key));
+    button.setAttribute("aria-label", `${level.name}: ${count(level.key)} objects. Select to highlight them in 3D.`);
+    const body = node("span", "mmi-level__body");
+    body.append(node("strong", "", level.key === "missing" || level.key === "invalid" ? level.name : `MMI ${level.key} · ${level.name}`), node("small", "", level.group));
+    const track = node("span", "mmi-level__track");
+    track.append(node("i"));
+    body.append(track);
+    button.append(node("span", "mmi-level__swatch"), body, node("span", "mmi-level__count", count(level.key).toLocaleString()));
+    button.addEventListener("click", () => {
+      mmiLevel = mmiLevel === level.key ? "all" : level.key;
+      mmiSelected = null;
+      renderMmi(); updateSelectionControls(); rememberView();
+      refreshMmiVisuals().catch((error) => setStatus(error.message, true));
+    });
+    chart.append(button);
+  }
+  const reasons = byId("mmi-reasons");
+  reasons.replaceChildren();
+  for (const [label, reason] of [["Property set missing", "Property set missing"], ["ProcessStatus missing", "ProcessStatus property missing"], ["Value blank", "ProcessStatus value blank"]]) {
+    const card = node("div", "mmi-reason");
+    card.append(node("strong", "", scope.filter((row) => row.reason === reason).length.toLocaleString()), node("span", "", label));
+    reasons.append(card);
+  }
+  const search = byId("mmi-search").value.trim().toLocaleLowerCase();
+  const matching = scope.filter((row) => (mmiLevel === "all" || row.key === mmiLevel) && (!search || `${row.name} ${row.globalId} ${row.ifcClass} ${row.checkName} ${row.reason}`.toLocaleLowerCase().includes(search)));
+  byId("mmi-list-title").textContent = mmiLevel === "all" ? "Objects in scope" : MMI_BY_KEY.get(mmiLevel)?.name || "Objects";
+  byId("mmi-list-count").textContent = `${matching.length.toLocaleString()} objects`;
+  const list = byId("mmi-list");
+  list.replaceChildren();
+  if (!matching.length) list.append(node("p", "empty-note", "No objects match these filters."));
+  const displayed = matching.slice(0, mmiShown);
+  if (mmiSelected) {
+    const selected = matching.find((row) => row.checkId === mmiSelected.checkId && row.globalId === mmiSelected.guid);
+    if (selected && !displayed.includes(selected)) displayed.unshift(selected);
+  }
+  for (const row of displayed) {
+    const button = node("button", "mmi-object");
+    button.type = "button";
+    button.setAttribute("role", "listitem");
+    button.setAttribute("aria-current", String(mmiSelected?.checkId === row.checkId && mmiSelected?.guid === row.globalId));
+    button.style.setProperty("--mmi-color", MMI_BY_KEY.get(row.key).color);
+    const body = node("span");
+    body.append(node("strong", "", row.name), node("small", "", `${row.checkName} · ${row.ifcClass} · ${row.storey}`));
+    body.append(node("small", "", row.reason || `${row.zones.join(", ") || "No IFC zone"} · ${row.globalId}`));
+    button.append(node("span", "mmi-object__dot"), body, node("b", "", row.key === "missing" ? "No MMI" : row.key === "invalid" ? "Review" : `MMI ${row.key}`));
+    button.addEventListener("click", () => selectMmiElement(row.checkId, row.globalId).catch((error) => setStatus(error.message, true)));
+    list.append(button);
+  }
+  byId("mmi-more").hidden = matching.length <= mmiShown;
+  byId("mmi-more").textContent = `Show more (${Math.min(80, matching.length - mmiShown).toLocaleString()} of ${(matching.length - mmiShown).toLocaleString()} remaining)`;
+}
+
+async function loadMmi() {
+  if (mmiRecords) return;
+  byId("mmi-levels").replaceChildren(node("p", "empty-note", "Reading ProcessStatus from IFC models…"));
+  const perModel = await Promise.all(checks.map(async (check) => {
+    const rows = await getJson("/mmi", `&check=${encodeURIComponent(check.id)}`);
+    if (!mmiSourceByModel.has(check.id)) mmiSourceByModel.set(check.id, defaultMmiSource(rows));
+    return rows.map((row) => ({ ...row, checkId: check.id, checkName: check.name || check.filename }));
+  }));
+  mmiRecords = perModel.flat();
+  renderMmiFilters();
+  renderMmi();
 }
 
 function buildFailureGroups() {
@@ -167,6 +313,15 @@ function rememberView() {
       search: failureSearch.value,
       passSearch: passSearch.value,
       activeResults,
+      workspaceMode,
+      mmiSources: Object.fromEntries(mmiSourceByModel),
+      mmiModel: byId("mmi-model").value,
+      mmiZone: byId("mmi-zone").value,
+      mmiStorey: byId("mmi-storey").value,
+      mmiClass: byId("mmi-class").value,
+      mmiLevel,
+      mmiSelected,
+      mmiColors,
     }));
   } catch (_) { /* Private browsing may disable session storage. */ }
 }
@@ -204,6 +359,7 @@ function restoreView(savedState = null) {
     if (selectedGuid) showProperties(selectedGuid, ++selectionVersion);
     if (state.browserOpen) setBrowserOpen(true);
     else if (selectedRelationshipGroup) loadRelationshipBrowser().catch((error) => setStatus(error.message, true));
+    if (state.workspaceMode === "mmi") setWorkspaceMode("mmi", state).catch((error) => setStatus(error.message, true));
   } catch (_) { /* An invalid or unavailable saved view should not block the model. */ }
 }
 
@@ -251,6 +407,18 @@ function renderSelectedIssues() {
   selectedIssues.append(node("p", "selected-issues__meta", counts.length
     ? `${counts.join(" · ")} · ${failure?.ifcClass || passed?.ifcClass || "IDS requirement"}`
     : `No IDS checks recorded${selectedGuid ? ` · ${selectedGuid}` : ""}`));
+  if (workspaceMode === "mmi" && mmiSelected && mmiRecords) {
+    const row = mmiRecords.find((item) => item.checkId === mmiSelected.checkId && item.globalId === mmiSelected.guid);
+    if (row) {
+      const resolved = mmiRecord(row);
+      const level = MMI_BY_KEY.get(resolved.key);
+      const statusLine = node("div", "mmi-selected-status");
+      statusLine.style.setProperty("--mmi-color", level.color);
+      statusLine.append(node("strong", "", resolved.key === "missing" || resolved.key === "invalid" ? level.name : `MMI ${resolved.key} · ${level.name}`));
+      statusLine.append(node("span", "", resolved.reason || `${mmiSourceByModel.get(row.checkId)}.ProcessStatus = ${resolved.raw}`));
+      selectedIssues.append(statusLine);
+    }
+  }
   if (failure?.checks.length) {
     const list = node("div", "selected-issues__list");
     addIssueCallouts(list, failure.checks);
@@ -437,6 +605,13 @@ async function frameBox(box) {
 }
 
 function updateSelectionControls() {
+  if (workspaceMode === "mmi") {
+    byId("isolate-selected").disabled = true;
+    byId("clear-selection").disabled = !mmiSelected && mmiLevel === "all";
+    const row = mmiSelected && mmiRecords?.find((item) => item.checkId === mmiSelected.checkId && item.globalId === mmiSelected.guid);
+    byId("view-title").textContent = row?.name || (mmiLevel !== "all" ? MMI_BY_KEY.get(mmiLevel)?.name : "MMI model overview");
+    return;
+  }
   const hasSelection = !!(selectedGuid || selectedClass || selectedRelationshipGroup);
   byId("isolate-selected").disabled = !hasSelection;
   byId("isolate-selected").setAttribute("aria-pressed", String(isolateSelected && hasSelection));
@@ -467,6 +642,185 @@ async function localIdsForClass(ifcClass) {
 async function localIdsForRelationshipGroup(group) {
   if (!group.idsPromise) group.idsPromise = model.getLocalIdsByGuids(group.guids).then((ids) => ids.filter((id) => id != null));
   return group.idsPromise;
+}
+
+async function mmiLocalIds(checkId) {
+  if (!mmiVisualCache.has(checkId)) {
+    mmiVisualCache.set(checkId, (async () => {
+      const candidate = modelById.get(checkId);
+      const rows = mmiRecords.filter((row) => row.checkId === checkId);
+      const map = new Map();
+      for (let offset = 0; offset < rows.length; offset += 1500) {
+        const batch = rows.slice(offset, offset + 1500);
+        const ids = await candidate.getLocalIdsByGuids(batch.map((row) => row.globalId));
+        batch.forEach((row, index) => { if (ids[index] != null) map.set(row.globalId, ids[index]); });
+      }
+      return map;
+    })());
+  }
+  return mmiVisualCache.get(checkId);
+}
+
+async function applyMmiVisualState(revision, frame) {
+  if (!mmiRecords || workspaceMode !== "mmi") return;
+  const scope = mmiScopedRecords();
+  const focus = mmiSelected
+    ? scope.filter((row) => row.checkId === mmiSelected.checkId && row.globalId === mmiSelected.guid)
+    : mmiLevel !== "all" ? scope.filter((row) => row.key === mmiLevel)
+      : ["mmi-model", "mmi-zone", "mmi-storey", "mmi-class"].some((id) => byId(id).value !== "all") ? scope : null;
+  const focusBox = new THREE.Box3();
+  for (const [checkId, candidate] of modelById) {
+    const idMap = await mmiLocalIds(checkId);
+    if (revision !== mmiVisualRevision || workspaceMode !== "mmi") return;
+    const previous = mmiAppliedColors.get(checkId) || [];
+    if (previous.length) await candidate.resetColor(previous);
+    await candidate.resetOpacity(undefined);
+    const rows = mmiRecords.filter((row) => row.checkId === checkId).map(mmiRecord);
+    const colored = [];
+    if (mmiColors) {
+      const groups = new Map();
+      for (const row of rows) {
+        const id = idMap.get(row.globalId);
+        if (id == null) continue;
+        if (!groups.has(row.key)) groups.set(row.key, []);
+        groups.get(row.key).push(id);
+        colored.push(id);
+      }
+      for (const [key, ids] of groups) await candidate.setColor(ids, new THREE.Color(MMI_BY_KEY.get(key).color));
+    }
+    mmiAppliedColors.set(checkId, colored);
+    if (focus !== null) {
+      await candidate.setOpacity(undefined, 0.12);
+      const ids = focus.filter((row) => row.checkId === checkId).map((row) => idMap.get(row.globalId)).filter((id) => id != null);
+      if (ids.length) {
+        await candidate.resetOpacity(ids);
+        if (frame) focusBox.union(await candidate.getMergedBox(ids));
+      }
+    }
+  }
+  if (revision !== mmiVisualRevision || workspaceMode !== "mmi") return;
+  const selectedId = mmiSelected?.checkId === activeCheckId ? (await mmiLocalIds(activeCheckId)).get(mmiSelected.guid) : null;
+  await updateOutline(selectedId ?? null);
+  if (frame && !focusBox.isEmpty()) await frameBox(focusBox);
+  fragments.core.update(true);
+  const description = mmiSelected ? "Selected MMI object" : mmiLevel !== "all" ? MMI_BY_KEY.get(mmiLevel)?.name : "MMI overview";
+  setStatus(`${description} · ${scope.length.toLocaleString()} objects in scope${focus !== null ? "; other objects are transparent" : ""}.`);
+}
+
+function refreshMmiVisuals(frame = false) {
+  mmiVisualRevision += 1;
+  if (!mmiRecords || !modelById.size || workspaceMode !== "mmi") return Promise.resolve();
+  if (!mmiVisualWork) {
+    mmiVisualWork = (async () => {
+      while (workspaceMode === "mmi") {
+        const revision = mmiVisualRevision;
+        await applyMmiVisualState(revision, frame);
+        frame = false;
+        if (revision === mmiVisualRevision) break;
+      }
+    })().finally(() => { mmiVisualWork = null; });
+  }
+  return mmiVisualWork;
+}
+
+async function resetMmiVisuals() {
+  if (mmiVisualWork) await mmiVisualWork.catch(() => {});
+  for (const [checkId, candidate] of modelById) {
+    const colored = mmiAppliedColors.get(checkId) || [];
+    if (colored.length) await candidate.resetColor(colored);
+    await candidate.resetOpacity(undefined);
+  }
+  mmiAppliedColors.clear();
+  await updateOutline(null);
+  fragments?.core.update(true);
+}
+
+async function selectMmiElement(checkId, guid, frame = true) {
+  if (!mmiRecords?.some((row) => row.checkId === checkId && row.globalId === guid)) return;
+  if (activeCheckId !== checkId) await activateCheck(checkId);
+  const row = mmiRecord(mmiRecords.find((item) => item.checkId === checkId && item.globalId === guid));
+  if (!mmiScopedRecords().some((item) => item.checkId === checkId && item.globalId === guid)) {
+    for (const id of ["mmi-model", "mmi-zone", "mmi-storey", "mmi-class"]) byId(id).value = "all";
+    renderMmiFilters();
+  }
+  mmiSelected = { checkId, guid };
+  mmiLevel = row.key;
+  selectedGuid = guid;
+  selectedName = row.name;
+  selectionVersion += 1;
+  renderSelectedIssues();
+  showProperties(guid, selectionVersion);
+  renderMmi();
+  updateSelectionControls();
+  rememberView();
+  await refreshMmiVisuals(frame);
+}
+
+async function clearMmiSelection() {
+  mmiSelected = null;
+  mmiLevel = "all";
+  selectedGuid = "";
+  selectedName = "";
+  selectionVersion += 1;
+  clearProperties();
+  renderSelectedIssues();
+  renderMmi();
+  updateSelectionControls();
+  rememberView();
+  await refreshMmiVisuals();
+}
+
+async function setWorkspaceMode(mode, savedState = null) {
+  if (mode === workspaceMode && !savedState) return;
+  if (mode === "mmi") {
+    if (!checks.length) return;
+    if (workspaceMode === "validation") await clearSelection();
+    if (savedState?.mmiSources) for (const [id, source] of Object.entries(savedState.mmiSources)) if (checks.some((check) => check.id === id) && typeof source === "string") mmiSourceByModel.set(id, source);
+    await loadMmi();
+    if (savedState) {
+      for (const [id, value] of [["mmi-model", savedState.mmiModel], ["mmi-zone", savedState.mmiZone], ["mmi-storey", savedState.mmiStorey], ["mmi-class", savedState.mmiClass]]) {
+        if ([...byId(id).options].some((option) => option.value === value)) byId(id).value = value;
+      }
+      renderMmiFilters();
+      mmiLevel = MMI_BY_KEY.has(savedState.mmiLevel) ? savedState.mmiLevel : "all";
+      mmiColors = savedState.mmiColors !== false;
+      const selected = savedState.mmiSelected;
+      mmiSelected = mmiRecords.some((row) => row.checkId === selected?.checkId && row.globalId === selected?.guid) ? selected : null;
+      if (mmiSelected?.checkId === activeCheckId) {
+        selectedGuid = mmiSelected.guid;
+        selectedName = mmiRecords.find((row) => row.checkId === activeCheckId && row.globalId === selectedGuid)?.name || "";
+        showProperties(selectedGuid, ++selectionVersion);
+        renderSelectedIssues();
+      }
+    }
+    workspaceMode = "mmi";
+    byId("mmi-panel").hidden = false;
+    byId("mmi-summary").hidden = false;
+    document.querySelector(".failures").hidden = true;
+    byId("mmi-colors").hidden = false;
+    byId("isolate-selected").hidden = true;
+    byId("mode-mmi").setAttribute("aria-current", "page");
+    byId("mode-validation").removeAttribute("aria-current");
+    byId("mmi-colors").textContent = mmiColors ? "MMI colors on" : "MMI colors off";
+    byId("mmi-colors").setAttribute("aria-pressed", String(mmiColors));
+    renderMmi(); updateSelectionControls(); rememberView();
+    await refreshMmiVisuals();
+  } else {
+    await resetMmiVisuals();
+    workspaceMode = "validation";
+    mmiSelected = null;
+    selectedGuid = "";
+    selectedName = "";
+    byId("mmi-panel").hidden = true;
+    byId("mmi-summary").hidden = true;
+    document.querySelector(".failures").hidden = false;
+    byId("mmi-colors").hidden = true;
+    byId("isolate-selected").hidden = false;
+    byId("mode-validation").setAttribute("aria-current", "page");
+    byId("mode-mmi").removeAttribute("aria-current");
+    clearProperties(); renderSelectedIssues(); updateSelectionControls(); rememberView();
+    await refreshVisuals(false);
+  }
 }
 
 async function applyVisualState(revision, frame) {
@@ -522,6 +876,7 @@ async function applyVisualState(revision, frame) {
 }
 
 function refreshVisuals(frame = true) {
+  if (workspaceMode === "mmi") return refreshMmiVisuals(frame);
   visualRevision += 1;
   pendingFrame ||= frame;
   if (!model) return Promise.resolve();
@@ -568,6 +923,7 @@ async function selectClass(ifcClass) {
 }
 
 async function clearSelection() {
+  if (workspaceMode === "mmi") return clearMmiSelection();
   selectedClass = "";
   selectedRelationshipGroup = null;
   selectedGuid = "";
@@ -641,6 +997,7 @@ async function pickElement(event, renderCanvas) {
   const [guid] = await model.getGuidsByLocalIds([hit.localId]);
   if (revision !== pickRevision) return;
   if (!guid) { setStatus("This model element has no IFC GlobalId to inspect."); return; }
+  if (workspaceMode === "mmi") { await selectMmiElement(activeCheckId, guid, false); return; }
   await selectGuid(guid, { fromModel: true, frame: false });
 }
 
@@ -1126,6 +1483,29 @@ function setBrowserOpen(open) {
 }
 
 function wireControls() {
+  byId("mode-validation").addEventListener("click", () => setWorkspaceMode("validation").catch((error) => setStatus(error.message, true)));
+  byId("mode-mmi").addEventListener("click", () => setWorkspaceMode("mmi").catch((error) => setStatus(error.message, true)));
+  const changeMmiFilter = (sourceChanged = false) => {
+    if (sourceChanged) mmiSourceByModel.set(byId("mmi-model").value, byId("mmi-source").value);
+    mmiSelected = null;
+    mmiLevel = "all";
+    selectedGuid = "";
+    selectedName = "";
+    clearProperties(); renderSelectedIssues();
+    renderMmiFilters(); renderMmi(); updateSelectionControls(); rememberView();
+    refreshMmiVisuals().catch((error) => setStatus(error.message, true));
+  };
+  for (const id of ["mmi-model", "mmi-zone", "mmi-storey", "mmi-class"]) byId(id).addEventListener("change", () => changeMmiFilter());
+  byId("mmi-source").addEventListener("change", () => changeMmiFilter(true));
+  byId("mmi-search").addEventListener("input", () => { mmiShown = 80; renderMmi(); });
+  byId("mmi-more").addEventListener("click", () => { mmiShown += 80; renderMmi(); });
+  byId("mmi-colors").addEventListener("click", () => {
+    mmiColors = !mmiColors;
+    byId("mmi-colors").textContent = mmiColors ? "MMI colors on" : "MMI colors off";
+    byId("mmi-colors").setAttribute("aria-pressed", String(mmiColors));
+    rememberView();
+    refreshMmiVisuals().catch((error) => setStatus(error.message, true));
+  });
   failureSearch.addEventListener("input", () => { shownFailures = 80; renderFailures(); rememberView(); });
   moreFailures.addEventListener("click", () => { shownFailures += 80; renderFailures(); });
   passSearch.addEventListener("input", () => { shownPasses = 80; renderPasses(); rememberView(); });
@@ -1321,6 +1701,7 @@ async function activateCheck(checkId) {
   selectedRelationshipGroup = null;
   selectedRequirementGroup = null;
   selectedName = "";
+  if (workspaceMode === "mmi") mmiSelected = null;
   selectionVersion += 1;
   clearProperties();
   selectedIssues.hidden = true;
@@ -1335,6 +1716,7 @@ async function activateCheck(checkId) {
   rememberView();
   setStatus(`${checks.find((c) => c.id === checkId)?.filename || "Model"} selected · ${failedElementCount().toLocaleString()} failed elements`);
   if (browserOpen) loadRelationshipBrowser().catch((error) => setStatus(error.message, true));
+  if (workspaceMode === "mmi") { renderMmi(); updateSelectionControls(); refreshMmiVisuals(false).catch((error) => setStatus(error.message, true)); }
 }
 
 async function start() {

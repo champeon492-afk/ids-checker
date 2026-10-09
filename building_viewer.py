@@ -41,6 +41,7 @@ class ViewerUpload:
     workspace_id: str = ""
     model: ifcopenshell.file | None = None
     browser_data: bytes | None = None
+    mmi_data: bytes | None = None
     model_lock: threading.Lock = field(default_factory=threading.Lock)
     checks: dict[str, "ViewerUpload"] | None = None
     check_name: str = ""
@@ -127,6 +128,45 @@ def _properties_json(upload: ViewerUpload, guid: str) -> bytes:
     return json.dumps(data, ensure_ascii=False).encode("utf-8")
 
 
+def _mmi_json(upload: ViewerUpload) -> bytes:
+    """Return physical IFC objects and the raw ProcessStatus sources in this model."""
+    with upload.model_lock:
+        if upload.mmi_data is not None:
+            return upload.mmi_data
+    model = _read_model(upload)
+    rows = []
+    for element in model.by_type("IfcElement"):
+        if element.is_a("IfcFeatureElement"):
+            continue  # Voids and other features are not project objects to mature.
+        guid = getattr(element, "GlobalId", None)
+        if not guid:
+            continue
+        psets = ifcopenshell.util.element.get_psets(element, psets_only=True)
+        sources = {name: _plain(properties["ProcessStatus"])
+                   for name, properties in psets.items() if "ProcessStatus" in properties}
+        container = ifcopenshell.util.element.get_container(element)
+        storey = container if container and container.is_a("IfcBuildingStorey") else None
+        zones = []
+        for relation in getattr(element, "HasAssignments", ()) or ():
+            group = getattr(relation, "RelatingGroup", None)
+            if group and group.is_a("IfcZone"):
+                zones.append(getattr(group, "Name", None) or group.GlobalId)
+        rows.append({
+            "globalId": guid,
+            "name": getattr(element, "Name", None) or "Unnamed element",
+            "ifcClass": element.is_a(),
+            "hasGeometry": bool(getattr(element, "Representation", None)),
+            "storey": getattr(storey, "Name", None) or "No storey",
+            "zones": sorted(set(zones)),
+            "propertySets": list(psets),
+            "statusSources": sources,
+        })
+    data = json.dumps(rows, ensure_ascii=False).encode("utf-8")
+    with upload.model_lock:
+        upload.mmi_data = data
+    return data
+
+
 class ViewerServer(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -191,7 +231,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
             kind = "application/json; charset=utf-8"
         else:
             body = None
-        if upload.checks is not None and parsed.path in ("/model", "/issues", "/passes", "/browser", "/properties"):
+        if upload.checks is not None and parsed.path in ("/model", "/issues", "/passes", "/browser", "/properties", "/mmi"):
             check_id = query.get("check", [""])[0]
             if check_id not in upload.checks:
                 self.send_error(404, "Validation set not found")
@@ -216,6 +256,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
             kind = "application/json; charset=utf-8"
         elif parsed.path == "/browser":
             body = _browser_json(upload)
+            kind = "application/json; charset=utf-8"
+        elif parsed.path == "/mmi":
+            body = _mmi_json(upload)
             kind = "application/json; charset=utf-8"
         elif parsed.path == "/properties":
             guid = parse_qs(parsed.query).get("guid", [""])[0]
@@ -254,6 +297,8 @@ def _viewer_html(token: str, workspace_id: str = "") -> str:
     <div class="brand"><img class="brand-logo" src="/logo.png?token={token}" alt="IDS Checker logo"><strong>IDS Model Viewer</strong></div>
     <div class="head-right"><a class="full-viewer-link" href="/?token={token}" target="_blank" rel="noopener noreferrer">Open full viewer ↗</a><span class="ot-pill ot-pill--dark">Federated IFC workspace</span><span id="status" role="status">Starting viewer…</span></div>
   </header>
+  <nav class="workspace-modes" aria-label="Viewer workspace"><button id="mode-validation" type="button" aria-current="page">Validation results</button><button id="mode-mmi" type="button">MMI overview</button></nav>
+  <section id="mmi-summary" class="mmi-summary" aria-label="MMI project summary" hidden><div><small>Objects in scope</small><strong id="mmi-total">—</strong></div><div><small>MMI assigned</small><strong id="mmi-assigned">—</strong><span id="mmi-assigned-detail"></span></div><div><small>MMI not assigned</small><strong id="mmi-missing">—</strong></div><div><small>Unrecognized value</small><strong id="mmi-invalid">—</strong></div></section>
   <div class="workspace-main">
     <aside class="failures ot-dark-card" aria-label="Validation results">
       <div class="panel-head"><span class="ot-eyebrow">Validation results</span><h2>Model elements</h2><p>Counts show distinct IFC elements. An element may appear in both lists if different checks pass and fail.</p></div>
@@ -271,8 +316,25 @@ def _viewer_html(token: str, workspace_id: str = "") -> str:
       <button id="more-passes" class="more-button" type="button" hidden>Show more</button>
       </section>
     </aside>
+    <aside id="mmi-panel" class="mmi-panel ot-dark-card" aria-label="MMI overview" hidden>
+      <div class="panel-head"><span class="ot-eyebrow">Declared ProcessStatus</span><h2>Objects by MMI level</h2><p>Select a level to highlight its objects. Counts are distinct IFC elements, not project completion.</p></div>
+      <div class="mmi-filters">
+        <label>IFC model<select id="mmi-model"><option value="all">All models · federated</option></select></label>
+        <label>ProcessStatus source<select id="mmi-source" disabled><option>Per-model source</option></select></label>
+        <label>Zone<select id="mmi-zone"><option value="all">All zones</option></select></label>
+        <label>Storey<select id="mmi-storey"><option value="all">All storeys</option></select></label>
+        <label>IFC class<select id="mmi-class"><option value="all">All IFC classes</option></select></label>
+      </div>
+      <p id="mmi-source-note" class="mmi-source-note">Each model uses its selected ProcessStatus property set.</p>
+      <div id="mmi-levels" class="mmi-levels" aria-label="MMI levels"></div>
+      <div class="mmi-missing-detail"><strong>Why status is missing</strong><div id="mmi-reasons"></div></div>
+      <div class="mmi-list-head"><strong id="mmi-list-title">Objects in scope</strong><span id="mmi-list-count"></span></div>
+      <label class="search-field"><svg class="ot-icon"><use href="/icons.svg?token={token}#search"/></svg><input id="mmi-search" type="search" placeholder="Search MMI objects" aria-label="Search MMI objects"></label>
+      <div id="mmi-list" class="mmi-list" role="list"></div>
+      <button id="mmi-more" class="more-button" type="button" hidden>Show more objects</button>
+    </aside>
     <section class="viewer ot-dark-card" aria-label="IFC 3D viewer">
-      <div class="viewer-head"><div><span class="ot-eyebrow">Model view</span><h2 id="view-title">Building overview</h2></div><div class="viewer-actions"><button id="pick-element" class="view-button" type="button" aria-pressed="true">Select in 3D</button><button id="isolate-selected" class="view-button" type="button" aria-pressed="false" disabled>Isolate selected</button><button id="clear-selection" class="view-button" type="button" disabled>Clear selection</button><button id="reset-view" class="view-button" type="button" disabled>Fit federation</button><button id="style-toggle" class="view-button" type="button" aria-pressed="true">Soft outline</button><button id="walk-mode" class="view-button" type="button" aria-pressed="false">Walk mode</button><button id="show-models" class="view-button" type="button" aria-pressed="false">Models</button><button id="show-properties" class="view-button" type="button">Properties</button><button id="show-browser" class="view-button" type="button">Model browser</button></div></div>
+      <div class="viewer-head"><div><span class="ot-eyebrow">Model view</span><h2 id="view-title">Building overview</h2></div><div class="viewer-actions"><button id="pick-element" class="view-button" type="button" aria-pressed="true">Select in 3D</button><button id="isolate-selected" class="view-button" type="button" aria-pressed="false" disabled>Isolate selected</button><button id="mmi-colors" class="view-button" type="button" aria-pressed="true" hidden>MMI colors on</button><button id="clear-selection" class="view-button" type="button" disabled>Clear selection</button><button id="reset-view" class="view-button" type="button" disabled>Fit federation</button><button id="style-toggle" class="view-button" type="button" aria-pressed="true">Soft outline</button><button id="walk-mode" class="view-button" type="button" aria-pressed="false">Walk mode</button><button id="show-models" class="view-button" type="button" aria-pressed="false">Models</button><button id="show-properties" class="view-button" type="button">Properties</button><button id="show-browser" class="view-button" type="button">Model browser</button></div></div>
       <div class="viewport"><div id="canvas" aria-label="Interactive 3D model"></div><div id="viewport-hint" class="viewport-hint">Click an element to inspect · Drag to orbit · Scroll to zoom</div><div id="walk-hint" class="walk-hint" hidden>Click the model to look around · WASD move · Space jump · Esc release mouse</div><div id="walk-reticle" class="walk-reticle" hidden aria-hidden="true"></div>
         <aside id="models-panel" class="models-panel ot-glass-card" aria-label="IFC models" hidden><div class="models-head"><strong>IFC models</strong><button id="close-models" class="close-inspector" type="button" aria-label="Close models panel">×</button></div><p>Turn models on or off in 3D. Select one to inspect its IDS results.</p><div id="models-list"></div></aside>
         <section id="selected-issues" class="selected-issues ot-glass-card" aria-label="Selected element validation issues" hidden></section>
